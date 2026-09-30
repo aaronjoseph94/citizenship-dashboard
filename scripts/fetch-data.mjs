@@ -126,7 +126,8 @@ async function pullPush(id) {
 
 async function fetchThreadComments(id, token) {
   const byId = new Map(), via = [], errors = [];
-  const add = (name, rows) => { let n = 0; for (const r of rows) if (r.body && !/^\[(deleted|removed)\]$/.test(r.body)) { if (!byId.has(r.id)) n++; byId.set(r.id, r); } via.push(`${name}:${rows.length}`); return n; };
+  // First copy wins: live Reddit runs first and carries later edits ("EDIT: oath Jun 20") that the archives may have missed.
+  const add = (name, rows) => { for (const r of rows) if (r.body && !/^\[(deleted|removed)\]$/.test(r.body) && !byId.has(r.id)) byId.set(r.id, r); via.push(`${name}:${rows.length}`); };
   for (const [name, fn] of [['reddit', () => redditLive(id, token)], ['arctic-shift', () => arcticShift(id)], ['pullpush', () => pullPush(id)]]) {
     try { add(name, await fn()); } catch (e) { errors.push(`${name}: ${e.message}`); }
     // Live Reddit is complete; the archives only fill gaps, so stop once one of them has worked too.
@@ -139,25 +140,40 @@ async function fetchThreadComments(id, token) {
 // --- timeline parsing: free-form comments like "Applied Feb 2026, AOR May, Test invite: Jun, Oath: Oct 3"
 const MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 const MON = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
+const NUM_RE = /\b(\d{1,2})[/.-](\d{1,2})[/.-](20\d\d|\d\d)\b/g;
+// order: 'MD' | 'DM' for dd/mm vs mm/dd numeric dates, 'auto' to decide per date.
 const DATE_RES = [
   [new RegExp(`\\b(20\\d\\d)[-/.](\\d{1,2})[-/.](\\d{1,2})\\b`, 'g'), m => ({ y: +m[1], mo: +m[2] - 1, d: +m[3] })],
-  [new RegExp(`\\b(\\d{1,2})[/.-](\\d{1,2})[/.-](20\\d\\d|\\d\\d)\\b`, 'g'), m => { let a = +m[1], b = +m[2]; const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; return a > 12 ? { y, mo: b - 1, d: a } : { y, mo: a - 1, d: b }; }],
+  [NUM_RE, (m, order) => { const a = +m[1], b = +m[2]; const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; const dm = order === 'DM' || (order === 'auto' && a > 12); return dm ? { y, mo: b - 1, d: a } : { y, mo: a - 1, d: b }; }],
   [new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?${MON},?\\s*(20\\d\\d)?\\b`, 'gi'), m => ({ y: m[3] ? +m[3] : null, mo: MONTHS[m[2].slice(0, 3).toLowerCase()], d: +m[1] })],
   [new RegExp(`\\b${MON}\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b(?!\\d)(?:,?\\s*(20\\d\\d))?`, 'gi'), m => ({ y: m[3] ? +m[3] : null, mo: MONTHS[m[1].slice(0, 3).toLowerCase()], d: +m[2] })],
   [new RegExp(`\\b${MON}(?:,?\\s*(?:'|20)?(\\d\\d))?\\b`, 'gi'), m => ({ y: m[2] ? 2000 + +m[2] : null, mo: MONTHS[m[1].slice(0, 3).toLowerCase()], d: 15, approx: true })],
   [new RegExp(`\\b(20\\d\\d)[-/](\\d{1,2})\\b`, 'g'), m => ({ y: +m[1], mo: +m[2] - 1, d: 15, approx: true })]
 ];
-// Checked by position: the keyword closest before a date labels it.
+// Milestone keywords. On a tie, the entry listed first wins, so the invite variants sit before their milestone.
 const KEYS = [
+  ['oathInvite', /(oath|ceremony)\s*(ceremony\s*)?(invit\w*|inv\b|email|letter|notice)|invit\w*\s*(to|for)\s*(the\s*)?(oath|ceremony)(\s*ceremony)?/gi],
   ['oath', /\boath|ceremony/gi],
   ['decision', /decision|approv|\bdm\b|\bdm[12]\b/gi],
-  ['testInvite', /(test|exam)\s*(invit|inv\b|email|link)|invit\w*\s*(to|for)\s*(the\s*)?(test|exam)|\bti\b/gi],
+  ['testInvite', /(test|exam)\s*(invit\w*|inv\b|email|link)|invit\w*\s*(to|for)\s*(the\s*)?(test|exam)/gi],
   ['test', /\btest|\bexam|interview/gi],
   ['aor', /\baor\b|acknowledg/gi],
-  ['submit', /\bappl(y|ied|ication)|submi|\bsent\b|mailed|\bapp\b|\bad\b|\bpaper\b|online/gi]
+  ['submit', /\bappl(y|ied|ication)|\bsubmi|\bmailed\b|\bapp\b|\bad\b|\bpaper\b/gi]
 ];
+const ORDER = ['submit', 'aor', 'testInvite', 'test', 'decision', 'oathInvite', 'oath'];
+const KEYWORD_RE = /(aor|oath|ceremony|test|exam|invite|dm|decision|approv\w*|appl\w*|submi\w*)/i;
 
-function extractDates(body) {
+// 'MD' / 'DM' when the numeric dates in a comment settle the order, 'ambiguous' when none can, 'auto' when they conflict.
+function numericOrder(text) {
+  let dm = false, md = false, any = false; let m;
+  NUM_RE.lastIndex = 0;
+  while ((m = NUM_RE.exec(text))) { any = true; if (+m[1] > 12) dm = true; if (+m[2] > 12) md = true; }
+  NUM_RE.lastIndex = 0;
+  if (!any) return 'MD';
+  return dm && md ? 'auto' : dm ? 'DM' : md ? 'MD' : 'ambiguous';
+}
+
+function extractDates(body, order) {
   const found = [];
   const taken = [];
   for (const [re, conv] of DATE_RES) {
@@ -165,54 +181,96 @@ function extractDates(body) {
     while ((m = re.exec(body))) {
       const s = m.index, e = s + m[0].length;
       if (taken.some(([a, b]) => s < b && e > a)) continue;
-      const v = conv(m);
+      const v = conv(m, order);
       if (v.mo == null || v.mo < 0 || v.mo > 11 || v.d < 1 || v.d > 31) continue;
-      // Bare "may" is usually the verb; only accept it next to a digit or a keyword.
-      if (/^may$/i.test(m[0].trim()) && !/\d/.test(body.slice(e, e + 6))) { const pre = body.slice(Math.max(0, s - 12), s); if (!/(aor|oath|test|appl|:|-)\s*$/i.test(pre)) continue; }
+      // Bare "may" is usually the verb; only accept it next to a digit or a milestone keyword ("AOR in May", "May - AOR").
+      if (/^may$/i.test(m[0].trim()) && !/\d/.test(body.slice(e, e + 6))) {
+        const pre = body.slice(Math.max(0, s - 20), s), post = body.slice(e, e + 20);
+        const kwBefore = new RegExp(`(?:${KEYWORD_RE.source}\\s*(in|on|by|around|of)?|[:\\-–])\\s*$`, 'i').test(pre);
+        const kwAfter = new RegExp(`^\\s*[:\\-–]\\s*${KEYWORD_RE.source}`, 'i').test(post);
+        if (!kwBefore && !kwAfter) continue;
+      }
       taken.push([s, e]); found.push({ s, e, ...v });
     }
   }
   return found.sort((a, b) => a.s - b.s);
 }
 
-function parseTimeline(body, createdUtc, threadYear) {
-  const text = body.replace(/\*|_|~|`|#/g, ' ');
-  const dates = extractDates(text);
+// Label from the keyword nearest the date: 'before' = last keyword ending before it, 'after' = first keyword following it.
+function keyIn(win, side) {
+  let best = null;
+  KEYS.forEach(([k, re], rank) => {
+    re.lastIndex = 0; let m, pos = -1;
+    while ((m = re.exec(win))) { pos = side === 'before' ? m.index + m[0].length : m.index; if (side === 'after') break; }
+    if (pos < 0) return;
+    if (!best || (side === 'before' ? pos > best.pos : pos < best.pos)) best = { k, pos, rank };
+  });
+  return best && best.k;
+}
+
+function timelineFor(text, createdUtc, threadYear, order) {
+  const dates = extractDates(text, order);
   if (dates.length < 2) return null;
   const created = new Date(createdUtc * 1000);
+  const before = dates.map((dt, i) => keyIn(text.slice(Math.max(i ? dates[i - 1].e : 0, dt.s - 60), dt.s), 'before'));
+  const after = dates.map((dt, i) => {
+    const nl = text.indexOf('\n', dt.e);
+    const stop = Math.min(nl < 0 ? text.length : nl, i + 1 < dates.length ? dates[i + 1].s : text.length, dt.e + 60);
+    return keyIn(text.slice(dt.e, stop), 'after');
+  });
+  // "Mar 3 - AOR" layouts put the keyword after the date; reading them keyword-first would shift every label by one.
+  const count = a => a.filter(Boolean).length;
+  const labels = !before[0] && after[0] && count(after) > count(before) ? after : before;
   const ev = {};
-  let prevEnd = 0, prevDate = null;
-  for (const dt of dates) {
-    const win = text.slice(Math.max(prevEnd, dt.s - 60), dt.s + 1);
-    let best = null;
-    for (const [k, re] of KEYS) { re.lastIndex = 0; let m, last = -1; while ((m = re.exec(win))) last = m.index; if (last >= 0 && (!best || last > best.i)) best = { k, i: last }; }
-    prevEnd = dt.e;
-    if (!best) continue;
+  let prevDate = null;
+  dates.forEach((dt, i) => {
+    const k = labels[i];
+    if (!k) return;
     let y = dt.y;
     if (y == null) {
       y = prevDate ? prevDate.getFullYear() : Math.min(threadYear, created.getFullYear());
-      let cand = new Date(y, dt.mo, dt.d);
+      const cand = new Date(y, dt.mo, dt.d);
       if (prevDate && cand < prevDate - 20 * DAY) y++;
       else if (!prevDate && cand > created.getTime() + 31 * DAY) y--;
     }
     const date = new Date(y, dt.mo, dt.d);
-    if (date > created.getTime() + 400 * DAY || y < 2019) continue; // future-dated scheduled events are OK (ceremony dates), junk isn't
-    if (!ev[best.k]) ev[best.k] = date;
+    if (date > created.getTime() + 400 * DAY || y < 2019) return; // future-dated scheduled events are OK (ceremony dates), junk isn't
+    if (!ev[k]) ev[k] = date;
     prevDate = date;
-  }
+  });
+  const present = ORDER.filter(k => ev[k]);
+  const ordered = present.every((k, i) => !i || ev[k] >= ev[present[i - 1]]);
   const months = (a, b) => (a && b && b > a) ? (b - a) / DAY / MONTH_DAYS : null;
   const test = ev.test || ev.testInvite;
+  // The ceremony date when given; the invite date only when that is all the comment has.
+  const oath = ev.oath || ev.oathInvite;
   const out = {
     aor: months(ev.submit, ev.aor),
     test: months(ev.aor, test),
     decision: months(test, ev.decision),
-    oath: months(ev.decision, ev.oath),
-    total: months(ev.aor, ev.oath),
+    oath: months(ev.decision, oath),
+    total: months(ev.aor, oath),
     // Same semantic as IRCC's published figure (AOR → oath). Keep submit → oath too, for display.
-    fullTotal: months(ev.submit, ev.oath)
+    fullTotal: months(ev.submit, oath)
   };
   for (const k of Object.keys(out)) if (out[k] != null && (out[k] <= 0 || out[k] > 60)) out[k] = null;
-  return Object.values(out).some(v => v != null) ? out : null;
+  return { out, ordered };
+}
+
+function parseTimeline(body, createdUtc, threadYear) {
+  const text = body.replace(/\*|_|~|`|#/g, ' ');
+  const order = numericOrder(text);
+  let res;
+  if (order !== 'ambiguous') res = timelineFor(text, createdUtc, threadYear, order);
+  else {
+    // Numbers like 05/01/2026 could be either order: use the reading whose milestones come out in sequence,
+    // and drop the comment when both (differently) or neither do.
+    const md = timelineFor(text, createdUtc, threadYear, 'MD'), dm = timelineFor(text, createdUtc, threadYear, 'DM');
+    const ok = [md, dm].filter(r => r && r.ordered);
+    res = ok.length === 1 ? ok[0] : ok.length === 2 && JSON.stringify(md.out) === JSON.stringify(dm.out) ? md : null;
+  }
+  if (!res) return null;
+  return Object.values(res.out).some(v => v != null) ? res.out : null;
 }
 
 const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
@@ -277,7 +335,9 @@ function classify(name) {
   if (new RegExp(`(test|exam)\\w*${to}(decision|dm|approv)`).test(n)) return 'decision';
   if (new RegExp(`(decision|dm|approv)\\w*${to}(oath|ceremony)`).test(n)) return 'oath';
   if (new RegExp(`aor${to}(oath|ceremony|citizen)`).test(n)) return 'total';
-  if (new RegExp(`(submi|appl|\\bapp\\b)\\w*${to}(oath|ceremony|citizen)`).test(n) || /\b(overall|total|end to end)\b/.test(n)) return 'fullTotal';
+  if (new RegExp(`(submi|appl|\\bapp\\b)\\w*${to}(oath|ceremony|citizen)`).test(n)) return 'fullTotal';
+  // "Total" alone is often a count card ("Total Applications"); only accept it with a duration word and no count word.
+  if (/\b(overall|total|end to end)\b/.test(n) && /(day|week|month|time|wait|processing|duration)/.test(n) && !/(count|number|#|applications?\b|applicants?|cases?|records?|rows)/.test(n)) return 'fullTotal';
   return null;
 }
 
@@ -309,7 +369,8 @@ async function fetchImmi() {
           const val = vals[i]; if (typeof val !== 'number') return;
           const label = `${v.title} ${nm}`; const k = classify(label) || classify(nm) || classify(v.title); if (!k || found[k] != null) return;
           const l = label.toLowerCase();
-          const months = /week/.test(l) ? val / 4.345 : (/day/.test(l) || val > 45) ? val / MONTH_DAYS : val;
+          // ImmiTracker measures are in days unless the label says otherwise.
+          const months = /week/.test(l) ? val / 4.345 : /month/.test(l) ? val : val / MONTH_DAYS;
           if (months > 0 && months < 60) { found[k] = r1(months); found[k + 'Field'] = label.trim(); }
         });
       }

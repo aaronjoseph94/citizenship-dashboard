@@ -30,8 +30,11 @@ const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0
 const parse = s => { if (!s) return null; const p = String(s).split('-').map(Number); if (p.length < 3 || p.some(isNaN)) return null; return new Date(p[0], p[1] - 1, p[2]); };
 const fmt = (d, o) => d ? d.toLocaleDateString('en-CA', o || { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const fmtM = d => fmt(d, { month: 'short', year: 'numeric' });
-const addM = (d, m) => { const r = new Date(d); const w = Math.floor(m); r.setMonth(r.getMonth() + w); r.setDate(r.getDate() + Math.round((m - w) * 30.4)); return r; };
+// Whole months clamp to the target month's last day (Jan 31 + 1 → Feb 28), then the fraction adds days.
+const addM = (d, m) => { const w = Math.floor(m), y = d.getFullYear(), mo = d.getMonth() + w; const r = new Date(y, mo, Math.min(d.getDate(), new Date(y, mo + 1, 0).getDate())); r.setDate(r.getDate() + Math.round((m - w) * 30.4)); return r; };
 const addBiz = (d, n) => { const r = new Date(d); let c = 0; while (c < n) { r.setDate(r.getDate() + 1); const w = r.getDay(); if (w && w !== 6) c++; } return r; };
+// Calendar-day index, immune to DST hour shifts.
+const dayNum = x => Date.UTC(x.getFullYear(), x.getMonth(), x.getDate()) / 864e5;
 const num = v => { if (v === '' || v == null) return null; const n = parseFloat(v); return isNaN(n) ? null : n; };
 const money = v => '$' + v.toFixed(2);
 const r1 = v => Math.round(v * 10) / 10;
@@ -52,8 +55,6 @@ function load() {
   let s = null; try { s = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* ignore */ }
   const d = defaults();
   if (s && typeof s === 'object') for (const k of Object.keys(d)) if (s[k] !== undefined) d[k] = s[k];
-  // v1 prototype stored IRCC's 12 as a user value; drop it so the fetched figure takes over.
-  if (d.bench.ircc && d.bench.ircc.total === '12' && Object.keys(d.bench.ircc).length === 1) d.bench.ircc = {};
   d.drafts = { note: '', todo: '', doc: '', evLabel: '', evDate: '' };
   return d;
 }
@@ -107,7 +108,7 @@ export default class App extends Component {
   derive() {
     const s = this.state, today = new Date();
     const applied = parse(s.applied) || today;
-    const day = Math.max(1, Math.floor((today - applied) / 864e5) + 1);
+    const day = Math.max(1, dayNum(today) - dayNum(applied) + 1);
     const sts = STAGES.map(x => Object.assign({}, x, this.st(x.id)));
     const aorDate = sts[0].status === 'done' ? parse(sts[0].date) : null;
     const aAor = this.avg('aor'), aTest = this.avg('test'), aDec = this.avg('decision'), aOath = this.avg('oath'), aTotal = this.avg('total');
@@ -171,7 +172,7 @@ export default class App extends Component {
     const timeline = tl.filter(e => e.d).sort((a, b) => a.d - b.d);
     const upcoming = timeline.filter(e => e.d >= todayStart).slice(0, 3);
     const estDate = oathDone ? null : earliest ? addM(oathBase, earliest.t) : null;
-    const daysLeft = oathDone ? 'Done' : estDate ? Math.max(0, Math.ceil((estDate - todayStart) / 864e5)) + ' days' : '—';
+    const daysLeft = oathDone ? 'Done' : estDate ? Math.max(0, dayNum(estDate) - dayNum(todayStart)) + ' days' : '—';
 
     // passport
     const pItems = PITEMS.map(i => Object.assign({ done: false, note: '' }, p.items[i.id] || {}, { def: i }));
@@ -337,7 +338,7 @@ export default class App extends Component {
                   {SOURCES.map(src => { const t = this.srcTotal(src.id); return <td key={src.id} style={{ padding: '10px 4px', textAlign: 'right', fontWeight: 600, color: t == null ? '#A3ACB9' : '#0A2540', whiteSpace: 'nowrap' }}>{t == null ? '–' : fmtM(addM(d.oathBase, t))}</td>; })}
                 </tr>
                 <tr><td style={{ padding: '4px 0', fontSize: 12, color: '#8898AA' }}>Sample</td>
-                  {SOURCES.map(src => { const l = liveSrc(src.id); return <td key={src.id} style={{ padding: '4px', textAlign: 'right', fontSize: 12, color: '#8898AA' }}>{l && l.n ? l.n + ' timelines' : l && l.ok ? 'official' : '–'}</td>; })}
+                  {SOURCES.map(src => { const l = liveSrc(src.id); return <td key={src.id} style={{ padding: '4px', textAlign: 'right', fontSize: 12, color: '#8898AA' }}>{l && l.n ? l.n + ' timelines' : l && l.ok ? (src.id === 'ircc' ? 'official' : 'report') : '–'}</td>; })}
                 </tr>
               </tbody>
             </table>

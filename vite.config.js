@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
-// Relative base so the build works on GitHub Pages under /<repo>/ as well as at a domain root.
+// Relative base: the build works at a domain root (Cloudflare Workers) or under a sub-path.
 export default defineConfig({ plugins: [react()], base: './' });
