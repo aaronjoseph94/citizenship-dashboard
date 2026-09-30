@@ -1,0 +1,9 @@
+{
+  "updated": "2026-09-30T00:00:00.000Z",
+  "sources": {
+    "ircc": { "ok": true, "total": 12, "url": "https://www.canada.ca/en/immigration-refugees-citizenship/services/application/check-processing-times.html", "raw": "seed value; replaced on first scheduled fetch" },
+    "r26": { "ok": false, "error": "not fetched yet", "url": "https://www.reddit.com/r/ImmigrationCanada/comments/1q6vm0e/megathread_processing_times_citizenship_2026/" },
+    "r25": { "ok": false, "error": "not fetched yet", "url": "https://www.reddit.com/r/ImmigrationCanada/comments/1hq3gg4/megathread_processing_times_citizenship_2025/" },
+    "immi": { "ok": false, "error": "not fetched yet", "url": "https://app.powerbi.com/view?r=eyJrIjoiZDU0Y2FiMmItMjYxYS00MWE2LWFhOWEtNWIyZGFiZWUxY2MwIiwidCI6IjU3ZGYxY2Q4LTZlMDItNDIyZi05NDhiLTNiOTUzNTg0YmQ0MyJ9" }
+  }
+}
