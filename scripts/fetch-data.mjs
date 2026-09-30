@@ -155,13 +155,13 @@ const KEYS = [
   ['oathInvite', /(oath|ceremony)\s*(ceremony\s*)?(invit\w*|inv\b|email|letter|notice)|invit\w*\s*(to|for)\s*(the\s*)?(oath|ceremony)(\s*ceremony)?/gi],
   ['oath', /\boath|ceremony/gi],
   ['decision', /decision|approv|\bdm\b|\bdm[12]\b/gi],
-  ['testInvite', /(test|exam)\s*(invit\w*|inv\b|email|link)|invit\w*\s*(to|for)\s*(the\s*)?(test|exam)/gi],
-  ['test', /\btest|\bexam|interview/gi],
+  ['testInvite', /(test|exam)\s*(invit\w*|inv\b|email|link)|invit\w*\s*(to|for)\s*(the\s*)?(test|exam)|\bti\b/gi],
+  ['test', /\btest|\bexam|interview|\btd\b/gi],
   ['aor', /\baor\b|acknowledg/gi],
   ['submit', /\bappl(y|ied|ication)|\bsubmi|\bmailed\b|\bapp\b|\bad\b|\bpaper\b/gi]
 ];
 const ORDER = ['submit', 'aor', 'testInvite', 'test', 'decision', 'oathInvite', 'oath'];
-const KEYWORD_RE = /(aor|oath|ceremony|test|exam|invite|dm|decision|approv\w*|appl\w*|submi\w*)/i;
+const KEYWORD_RE = /\b(aor|oath|ceremony|test|exam|invite|dm|decision|approv\w*|appl\w*|submi\w*)/i;
 
 // 'MD' / 'DM' when the numeric dates in a comment settle the order, 'ambiguous' when none can, 'auto' when they conflict.
 function numericOrder(text) {
@@ -186,9 +186,12 @@ function extractDates(body, order) {
       // Bare "may" is usually the verb; only accept it next to a digit or a milestone keyword ("AOR in May", "May - AOR").
       if (/^may$/i.test(m[0].trim()) && !/\d/.test(body.slice(e, e + 6))) {
         const pre = body.slice(Math.max(0, s - 20), s), post = body.slice(e, e + 20);
-        const kwBefore = new RegExp(`(?:${KEYWORD_RE.source}\\s*(in|on|by|around|of)?|[:\\-–])\\s*$`, 'i').test(pre);
+        // "AOR in May" always counts; "AOR May" / "AOR: May" only when an item separator or the end follows,
+        // so prose like "the oath ceremony may be virtual" is not read as a date.
+        const withPrep = new RegExp(`${KEYWORD_RE.source}\\s*(in|on|by|around|of)\\s*$`, 'i').test(pre);
+        const bare = new RegExp(`(?:${KEYWORD_RE.source}|[:\\-–])\\s*[:\\-–]?\\s*$`, 'i').test(pre) && /^\s*(?:$|[,.;:|)\n\-–])/.test(post);
         const kwAfter = new RegExp(`^\\s*[:\\-–]\\s*${KEYWORD_RE.source}`, 'i').test(post);
-        if (!kwBefore && !kwAfter) continue;
+        if (!withPrep && !bare && !kwAfter) continue;
       }
       taken.push([s, e]); found.push({ s, e, ...v });
     }
@@ -215,12 +218,16 @@ function timelineFor(text, createdUtc, threadYear, order) {
   const before = dates.map((dt, i) => keyIn(text.slice(Math.max(i ? dates[i - 1].e : 0, dt.s - 60), dt.s), 'before'));
   const after = dates.map((dt, i) => {
     const nl = text.indexOf('\n', dt.e);
-    const stop = Math.min(nl < 0 ? text.length : nl, i + 1 < dates.length ? dates[i + 1].s : text.length, dt.e + 60);
+    // Stop at the item separator too: in "AOR: Mar 3, Test: May 20" the keyword after ", " belongs to the next date.
+    const sep = text.slice(dt.e).search(/[,;|\n]|\.\s/);
+    const stop = Math.min(sep < 0 ? text.length : dt.e + sep, nl < 0 ? text.length : nl, i + 1 < dates.length ? dates[i + 1].s : text.length, dt.e + 60);
     return keyIn(text.slice(dt.e, stop), 'after');
   });
   // "Mar 3 - AOR" layouts put the keyword after the date; reading them keyword-first would shift every label by one.
-  const count = a => a.filter(Boolean).length;
-  const labels = !before[0] && after[0] && count(after) > count(before) ? after : before;
+  // Pick the layout by which side of each date has a keyword on the date's own line (a header line doesn't count).
+  const lineStart = i => text.lastIndexOf('\n', dates[i].s - 1) + 1;
+  const sameLineBefore = dates.filter((dt, i) => keyIn(text.slice(Math.max(lineStart(i), i ? dates[i - 1].e : 0), dt.s), 'before')).length;
+  const labels = after.filter(Boolean).length > sameLineBefore ? after : before;
   const ev = {};
   let prevDate = null;
   dates.forEach((dt, i) => {
@@ -369,8 +376,10 @@ async function fetchImmi() {
           const val = vals[i]; if (typeof val !== 'number') return;
           const label = `${v.title} ${nm}`; const k = classify(label) || classify(nm) || classify(v.title); if (!k || found[k] != null) return;
           const l = label.toLowerCase();
-          // ImmiTracker measures are in days unless the label says otherwise.
-          const months = /week/.test(l) ? val / 4.345 : /month/.test(l) ? val : val / MONTH_DAYS;
+          // ImmiTracker measures are in days unless the label says otherwise; the field name's unit beats the title's
+          // ("Avg Days AOR to Oath" under a "last 12 months" title is days).
+          const unit = t => /week/.test(t) ? 4.345 : /day/.test(t) ? MONTH_DAYS : /month/.test(t) ? 1 : null;
+          const months = val / (unit(nm.toLowerCase()) ?? unit(String(v.title).toLowerCase()) ?? MONTH_DAYS);
           if (months > 0 && months < 60) { found[k] = r1(months); found[k + 'Field'] = label.trim(); }
         });
       }
