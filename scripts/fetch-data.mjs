@@ -314,6 +314,27 @@ function parseTimeline(body, createdUtc, threadYear) {
 
 const median = a => { if (!a.length) return null; const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
 
+// Citizenship page is a per-applicant date table, not span cards. Median of the date gaps.
+function tableSpans(names, rows) {
+  const at = re => names.findIndex(n => re.test(String(n)));
+  const sub = at(/^Submission$/i), aor = at(/^AOR$/i), tested = at(/^Tested$/i), oath = at(/Oath Completed/i);
+  if (sub < 0 || aor < 0) return {};
+  const ms = v => typeof v === 'number' && v > 1e12 ? v : null;
+  const gap = (x, y) => { const a = ms(x), b = ms(y); return a && b && b >= a ? (b - a) / DAY / MONTH_DAYS : null; };
+  const med = (i, j) => {
+    if (i < 0 || j < 0) return null;
+    const vals = rows.map(r => gap(Object.values(r)[i], Object.values(r)[j])).filter(v => v > 0 && v < 60);
+    return vals.length >= 2 ? r1(median(vals)) : null;
+  };
+  const out = {};
+  const put = (k, v, field) => { if (v == null) return; out[k] = v; out[k + 'Field'] = field; };
+  put('aor', med(sub, aor), 'median Submission to AOR');
+  put('test', med(aor, tested), 'median AOR to tested');
+  put('total', med(aor, oath), 'median AOR to oath');
+  put('fullTotal', med(sub, oath), 'median Submission to oath');
+  return out;
+}
+
 async function fetchRedditSource(key, token) {
   const t = THREADS[key];
   const { comments, via, errors } = await fetchThreadComments(t.id, token);
@@ -333,14 +354,18 @@ async function fetchRedditSource(key, token) {
 }
 
 // ---------------------------------------------------------------- ImmiTracker (public Power BI report)
+const pbiApiHost = uri => 'https://' + new URL(uri).hostname.replace('-redirect', '').replace('global-', '').replace('.analysis', '-api.analysis');
 async function pbiApiHosts() {
   const hosts = [];
   try {
-    const r = await getJSON(`https://api.powerbi.com/public/routing/cluster/${PBI.tenant}`);
-    const u = new URL(r.FixedClusterUri);
-    hosts.push('https://' + u.hostname.replace('-redirect', '').replace('global-', '').replace('.analysis', '-api.analysis'));
+    hosts.push(pbiApiHost((await getJSON(`https://api.powerbi.com/public/routing/cluster/${PBI.tenant}`)).FixedClusterUri));
   } catch (e) { log('pbi routing', e.message); }
-  hosts.push('https://wabi-canada-central-a-primary-api.analysis.windows.net', 'https://wabi-us-east2-api.analysis.windows.net', 'https://wabi-us-north-central-api.analysis.windows.net');
+  // Routing often resets from cloud IPs. The public report page names the live cluster.
+  try {
+    const m = (await (await http(PBI.url)).text()).match(/ClusterUri"\s*:\s*"(https:[^"]+)"/);
+    if (m) hosts.push(pbiApiHost(m[1]));
+  } catch (e) { log('pbi page', e.message); }
+  hosts.push('https://wabi-canada-central-b-primary-api.analysis.windows.net', 'https://wabi-us-east2-api.analysis.windows.net', 'https://wabi-us-north-central-api.analysis.windows.net');
   return [...new Set(hosts)];
 }
 
@@ -450,13 +475,21 @@ async function fetchImmi() {
   }
   const raw = { fetched: new Date().toISOString(), host, pages: (mae.exploration?.sections || []).map(s => s.displayName), visuals: [] };
   const found = {}, errors = [], missedKeys = new Set();
-  for (const v of visuals.slice(0, 80)) {
-    const body = { version: '1.0.0', queries: [{ Query: { Commands: [{ SemanticQueryDataShapeCommand: { Query: v.q, Binding: { Primary: { Groupings: [{ Projections: v.q.Select.map((_, i) => i) }] }, DataReduction: { DataVolume: 3, Primary: { Window: { Count: 200 } } }, Version: 1 }, ExecutionMetricsKind: 1 } }] }, QueryId: '', ApplicationContext: { DatasetId: model?.dbName, Sources: [{ ReportId: reportId, VisualId: v.name }] } }], cancelQueries: [], modelId: model?.id };
+  // The report's first pages are other programs. Citizenship has the dates we need; stop once those spans are in.
+  const ordered = [...visuals.filter(v => v.page === 'Citizenship'), ...visuals.filter(v => v.page !== 'Citizenship')];
+  for (const v of ordered.slice(0, 80)) {
+    if (v.page !== 'Citizenship' && found.total != null && found.aor != null) break;
+    const windowCount = v.page === 'Citizenship' && /table/i.test(v.type) ? 1000 : 200;
+    const body = { version: '1.0.0', queries: [{ Query: { Commands: [{ SemanticQueryDataShapeCommand: { Query: v.q, Binding: { Primary: { Groupings: [{ Projections: v.q.Select.map((_, i) => i) }] }, DataReduction: { DataVolume: 3, Primary: { Window: { Count: windowCount } } }, Version: 1 }, ExecutionMetricsKind: 1 } }] }, QueryId: '', ApplicationContext: { DatasetId: model?.dbName, Sources: [{ ReportId: reportId, VisualId: v.name }] } }], cancelQueries: [], modelId: model?.id };
     try {
       const r = await getJSON(`${host}/public/reports/querydata?synchronous=true`, { method: 'POST', headers, body: JSON.stringify(body) });
       const rows = decodeDsr(r.results?.[0]?.result);
       const names = v.q.Select.map(selName);
       raw.visuals.push({ page: v.page, type: v.type, title: v.title, fields: names, filtersApplied: v.filtered, rows: rows.slice(0, 25) });
+      if (v.page === 'Citizenship' && rows.length > 1) {
+        const spans = tableSpans(names, rows);
+        for (const [k, val] of Object.entries(spans)) if (!k.endsWith('Field') && found[k] == null) { found[k] = val; found[k + 'Field'] = spans[k + 'Field']; }
+      }
       // Single-value visuals (cards/KPIs) whose field or title names a milestone span.
       if (rows.length === 1) {
         const vals = Object.values(rows[0]);
@@ -507,8 +540,10 @@ async function main() {
   try { token = await redditToken(); if (token) log('using Reddit OAuth'); } catch (e) { log('reddit oauth failed:', e.message); }
 
   const jobs = { ircc: fetchIrcc, r26: () => fetchRedditSource('r26', token), r25: () => fetchRedditSource('r25', token), immi: fetchImmi };
+  const only = process.env.FETCH_ONLY?.split(',').filter(Boolean);
   const sources = {};
   for (const [k, fn] of Object.entries(jobs)) {
+    if (only && !only.includes(k)) { sources[k] = prev.sources?.[k] || {}; continue; }
     try {
       const res = await fn(), old = prev.sources?.[k] || {};
       // A milestone whose own query failed keeps its previous value (marked stale) instead of vanishing.
