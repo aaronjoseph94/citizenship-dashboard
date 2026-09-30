@@ -51,29 +51,102 @@ function defaults() {
     passport: { status: 'not_started', type: '10', method: 'office', submitted: '', received: '', items: {} }
   };
 }
-function load() {
-  let s = null; try { s = JSON.parse(localStorage.getItem(KEY)); } catch (e) { /* ignore */ }
+function readStored() { try { const s = JSON.parse(localStorage.getItem(KEY)); return s && typeof s === 'object' ? s : null; } catch (e) { return null; } }
+function fromStored(s) {
   const d = defaults();
   if (s && typeof s === 'object') for (const k of Object.keys(d)) if (s[k] !== undefined) d[k] = s[k];
   d.drafts = { note: '', todo: '', doc: '', evLabel: '', evDate: '' };
   return d;
 }
+const load = () => fromStored(readStored());
+
+// Cloud sync (worker/index.js): the passphrase is kept on this device only.
+const SYNC_KEY = 'citizenship-sync-key';
+const readSyncKey = () => { try { return localStorage.getItem(SYNC_KEY) || ''; } catch (e) { return ''; } };
+const writeSyncKey = v => { try { if (v) localStorage.setItem(SYNC_KEY, v); else localStorage.removeItem(SYNC_KEY); } catch (e) { /* ignore */ } };
+const timeText = t => t ? new Date(t).toLocaleTimeString('en-CA', { hour: 'numeric', minute: '2-digit' }) : '';
 
 function Seg({ items, active, pick, style }) {
   return <div className="seg" style={style}>{items.map(([id, label]) => <button key={id} className={id === active ? 'on' : ''} onClick={() => pick(id)}>{label}</button>)}</div>;
 }
 
 export default class App extends Component {
-  state = Object.assign(load(), { live: null });
+  state = Object.assign(load(), { live: null, sync: { status: 'checking', at: 0, msg: '' }, syncDraft: '' });
+  // savedAt stamps the last real edit (not view switches); the newer copy wins between this device and the cloud.
+  savedAt = (readStored() || {}).savedAt || 0;
+  hasLocal = !!readStored();
+  lastBody = this.dataBody(this.state);
 
   componentDidMount() {
     // Another open tab saved: adopt its data so this tab never writes a stale copy over it. Keep this tab's view and drafts.
-    this.onStorage = e => { if (e.key !== KEY && e.key !== null) return; const d = load(); delete d.drafts; delete d.tab; this.setState(d); };
+    this.onStorage = e => {
+      if (e.key === SYNC_KEY) { this.pull(); return; }
+      if (e.key !== KEY && e.key !== null) return;
+      const s = readStored(); const d = fromStored(s); delete d.drafts; delete d.tab;
+      this.savedAt = (s || {}).savedAt || 0; this.lastBody = this.dataBody(d); this.setState(d);
+    };
+    // Coming back to the app (another device may have changed things): check the cloud copy.
+    this.onFocus = () => { if (document.visibilityState !== 'hidden' && Date.now() - (this.lastPull || 0) > 5000) this.pull(); };
+    this.onHide = () => { if (this.pushT) { clearTimeout(this.pushT); this.pushT = null; this.push(true); } };
     window.addEventListener('storage', this.onStorage);
+    window.addEventListener('focus', this.onFocus);
+    document.addEventListener('visibilitychange', this.onFocus);
+    window.addEventListener('pagehide', this.onHide);
     fetch('./data/wait-times.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).then(live => live && this.setState({ live })).catch(() => {});
+    this.pull();
   }
-  componentWillUnmount() { window.removeEventListener('storage', this.onStorage); }
-  save() { const o = {}; for (const k of PERSIST) o[k] = this.state[k]; try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) { /* ignore */ } }
+  componentWillUnmount() {
+    window.removeEventListener('storage', this.onStorage); window.removeEventListener('focus', this.onFocus);
+    document.removeEventListener('visibilitychange', this.onFocus); window.removeEventListener('pagehide', this.onHide);
+  }
+  persisted(st) { const o = {}; for (const k of PERSIST) o[k] = st[k]; return o; }
+  dataBody(st) { const o = this.persisted(st); delete o.tab; return JSON.stringify(o); }
+  save() {
+    const o = this.persisted(this.state), body = this.dataBody(this.state);
+    const changed = body !== this.lastBody;
+    if (changed) { this.savedAt = Date.now(); this.lastBody = body; this.hasLocal = true; }
+    try { localStorage.setItem(KEY, JSON.stringify(Object.assign(o, { savedAt: this.savedAt }))); } catch (e) { /* ignore */ }
+    if (changed) this.schedulePush();
+  }
+  setSync(sync) { this.setState(s => ({ sync: Object.assign({}, s.sync, sync) })); }
+  api(method, body, keepalive) {
+    return fetch('./api/state', { method, keepalive, cache: 'no-store', headers: Object.assign({ authorization: 'Bearer ' + readSyncKey() }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
+  }
+  // Take the cloud copy: it replaces this device's data (this tab keeps its current view and drafts).
+  adopt(remote) {
+    const d = fromStored(remote.data); delete d.drafts; delete d.tab;
+    this.savedAt = remote.savedAt; this.lastBody = this.dataBody(d); this.hasLocal = true;
+    try { localStorage.setItem(KEY, JSON.stringify(Object.assign({}, remote.data, { tab: this.state.tab, savedAt: remote.savedAt }))); } catch (e) { /* ignore */ }
+    this.setState(d);
+  }
+  async pull() {
+    this.lastPull = Date.now();
+    let r;
+    try { r = await this.api('GET'); } catch (e) { this.setSync({ status: readSyncKey() ? 'error' : 'off', msg: '' }); return; }
+    // No API (plain static hosting or local `vite dev`) or no passphrase configured on the server: local only.
+    if (r.status === 503 || !(r.headers.get('content-type') || '').includes('json')) { this.setSync({ status: 'off', msg: '' }); return; }
+    if (r.status === 401) { this.setSync({ status: 'locked', msg: readSyncKey() ? 'That passphrase didn’t work.' : '' }); return; }
+    if (!r.ok) { this.setSync({ status: 'error', msg: '' }); return; }
+    const { state: remote } = await r.json();
+    if (remote && remote.savedAt > this.savedAt) this.adopt(remote);
+    else if (this.hasLocal && (!remote || this.savedAt > remote.savedAt)) { this.savedAt = this.savedAt || Date.now(); this.setSync({ status: 'ok', msg: '' }); await this.push(); return; }
+    this.setSync({ status: 'ok', at: Date.now(), msg: '' });
+  }
+  schedulePush() {
+    if (!['ok', 'error'].includes(this.state.sync.status)) return;
+    clearTimeout(this.pushT); this.pushT = setTimeout(() => { this.pushT = null; this.push(); }, 800);
+  }
+  async push(keepalive) {
+    const body = { data: this.persisted(this.state), savedAt: this.savedAt };
+    try {
+      const r = await this.api('PUT', body, keepalive);
+      if (r.status === 401) { this.setSync({ status: 'locked', msg: 'That passphrase didn’t work.' }); return; }
+      if (r.status === 409) { this.adopt((await r.json()).state); this.setSync({ status: 'ok', at: Date.now() }); return; }
+      this.setSync(r.ok ? { status: 'ok', at: Date.now(), msg: '' } : { status: 'error' });
+    } catch (e) { this.setSync({ status: 'error' }); }
+  }
+  connect() { const k = this.state.syncDraft.trim(); if (!k) return; writeSyncKey(k); this.setState({ syncDraft: '' }); this.setSync({ status: 'checking', msg: '' }); this.pull(); }
+  forget() { writeSyncKey(''); this.setSync({ status: 'locked', msg: '' }); }
   up(fn) { this.setState(fn, () => this.save()); }
   go(tab) { this.up({ tab }); window.scrollTo(0, 0); }
 
@@ -118,7 +191,31 @@ export default class App extends Component {
   setPItem(id, k, v) { this.up(s => { const it = Object.assign({ done: false, note: '' }, s.passport.items[id] || {}); return { passport: Object.assign({}, s.passport, { items: Object.assign({}, s.passport.items, { [id]: Object.assign(it, { [k]: v }) }) }) }; }); }
   toggleIn(list, id, k) { this.up(st => ({ [list]: st[list].map(x => x.id === id ? Object.assign({}, x, { [k]: !x[k] }) : x) })); }
   removeIn(list, id) { this.up(st => ({ [list]: st[list].filter(x => x.id !== id) })); }
-  resetAll() { if (window.confirm('Clear all saved tracker data on this device?')) { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } this.setState(Object.assign(defaults(), { drafts: this.state.drafts })); } }
+  resetAll() {
+    const everywhere = this.state.sync.status === 'ok';
+    if (!window.confirm(everywhere ? 'Clear all saved tracker data, here and in your cloud copy?' : 'Clear all saved tracker data on this device?')) return;
+    try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ }
+    this.setState(Object.assign(defaults(), { drafts: this.state.drafts }), () => { this.lastBody = null; this.save(); });
+  }
+  renderSyncForm(compact) {
+    const s = this.state.sync;
+    return (
+      <span style={{ display: 'inline-flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input type="password" className={'inp' + (compact ? ' sm' : '')} style={{ width: compact ? 180 : 220 }} placeholder="Sync passphrase" autoComplete="current-password"
+          value={this.state.syncDraft} onChange={e => this.setState({ syncDraft: e.target.value })} onKeyDown={e => e.key === 'Enter' && this.connect()} />
+        <button className={compact ? 'btn-ghost' : 'btn'} style={compact ? { height: 32, fontSize: 12.5 } : undefined} onClick={() => this.connect()}>Connect</button>
+        {s.msg && <span style={{ color: '#B42318', fontSize: 12.5 }}>{s.msg}</span>}
+      </span>
+    );
+  }
+  syncLine() {
+    const s = this.state.sync;
+    if (s.status === 'ok') return <span>Saved to your cloud copy{s.at ? ' (last sync ' + timeText(s.at) + ')' : ''}. <button className="link" style={{ fontSize: 12.5, color: '#8898AA', textDecoration: 'underline' }} onClick={() => this.forget()}>Forget passphrase on this device</button></span>;
+    if (s.status === 'error') return <span>Saved on this device; cloud sync is unreachable and will retry.</span>;
+    if (s.status === 'locked') return <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>Saved on this device. Sync across devices: {this.renderSyncForm(true)}</span>;
+    if (s.status === 'checking') return <span>Checking cloud sync…</span>;
+    return <span>Saved on this device only.</span>;
+  }
 
   derive() {
     const s = this.state, today = new Date();
@@ -218,6 +315,12 @@ export default class App extends Component {
     const nextTodos = s.todos.filter(t => !t.done).slice(0, 4);
     const live = s.live;
     return <>
+      {s.sync.status === 'locked' && (
+        <section className="card" style={{ marginBottom: 16, display: 'flex', flexWrap: 'wrap', gap: '10px 16px', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ fontSize: 14, lineHeight: 1.5, flex: '1 1 280px' }}><strong style={{ fontWeight: 600 }}>Load your saved dates.</strong> <span className="muted">Your tracker is stored in the cloud. Enter your passphrase once on this device to open it.</span></div>
+          {this.renderSyncForm(false)}
+        </section>
+      )}
       <section className="hero">
         <div className="mesh" />
         <div style={{ position: 'relative', display: 'flex', flexWrap: 'wrap', gap: '28px 40px', justifyContent: 'space-between', alignItems: 'flex-end' }}>
@@ -406,7 +509,7 @@ export default class App extends Component {
         </ul>
         {!s.notes.length && <p style={{ margin: '12px 0 0', fontSize: 13.5, color: '#425466' }}>No notes yet.</p>}
       </section>
-      <p style={{ margin: '28px 0 0', fontSize: 12.5, color: '#8898AA', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}><span>Saved on this device only.</span><button className="link" style={{ fontSize: 12.5, color: '#8898AA', textDecoration: 'underline' }} onClick={() => this.resetAll()}>Clear all data</button></p>
+      <p style={{ margin: '28px 0 0', fontSize: 12.5, color: '#8898AA', display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>{this.syncLine()}<button className="link" style={{ fontSize: 12.5, color: '#8898AA', textDecoration: 'underline' }} onClick={() => this.resetAll()}>Clear all data</button></p>
     </>;
   }
 

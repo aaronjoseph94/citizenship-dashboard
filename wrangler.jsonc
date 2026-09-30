@@ -1,10 +1,16 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Static site on Cloudflare Workers (static assets only, no server code). The app has no client-side
-  // routes, so unknown paths get a plain 404 rather than an SPA fallback.
+  // Static app plus a small API (worker/index.js) that stores your tracker data in a Durable Object.
+  // Unknown paths get a plain 404 (the app has no client-side routes).
   "name": "citizenship-dashboard",
+  "main": "worker/index.js",
   "compatibility_date": "2026-09-30",
   "assets": {
-    "directory": "./dist"
-  }
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "TRACKER", "class_name": "TrackerState" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TrackerState"] }]
 }

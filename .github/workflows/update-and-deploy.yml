@@ -53,6 +53,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # Passphrase for cross-device sync (worker/index.js). Without it the app saves on each device only.
+      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
     steps:
       - name: Check Cloudflare secrets
         if: env.CLOUDFLARE_API_TOKEN == '' || env.CLOUDFLARE_ACCOUNT_ID == ''
@@ -78,3 +80,6 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: deploy
+      - name: Set sync passphrase
+        if: env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' && env.SYNC_TOKEN != ''
+        run: printf '%s' "$SYNC_TOKEN" | npx wrangler secret put SYNC_TOKEN

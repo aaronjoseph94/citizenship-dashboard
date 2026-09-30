@@ -17,6 +17,15 @@ the browser's localStorage (`citizenship-tracker-v1`).
 
 "Total" means AOR → oath, matching IRCC's published figure.
 
+## Your data across devices (cloud sync)
+
+Dates, stages, notes and checklists are saved in the browser and, once set up, in a Cloudflare Durable Object behind
+the Worker (`worker/index.js`, API at `/api/state`). Open the site on any device, enter your sync passphrase once, and
+your data loads there; every change is saved to the cloud a moment later, and other devices pick it up when you come
+back to them. The newest edit wins. Without a passphrase configured the app works as before (saved on each device only).
+
+The site is public, so the API only answers requests carrying the passphrase. Choose a long, random one.
+
 ### Schedule and deploy
 
 The site is hosted on **Cloudflare Workers** (static assets only, see `wrangler.jsonc`).
@@ -30,6 +39,8 @@ One-time setup:
    your Account ID (Workers & Pages overview, right-hand column).
 3. Add them as GitHub repository secrets: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
    (Settings → Secrets and variables → Actions). Without them the deploy step is skipped with a warning.
+   Also add `SYNC_TOKEN` (your sync passphrase); each deploy uploads it to the Worker. You can instead set it in the
+   Cloudflare dashboard (Worker → Settings → Variables and Secrets) or with `npx wrangler secret put SYNC_TOKEN`.
 4. Run the workflow once from the Actions tab. The site appears at
    `https://citizenship-dashboard.<your-subdomain>.workers.dev`; add a custom domain in the Cloudflare dashboard if you like.
 5. Optional but recommended for reliability: create a Reddit "script" app at <https://www.reddit.com/prefs/apps> and add
@@ -46,4 +57,5 @@ npm run dev          # local app
 npm run fetch-data   # refresh public/data/wait-times.json
 npm run build        # static build in dist/
 npm run deploy       # build + wrangler deploy (needs `npx wrangler login` first)
+npx wrangler dev     # after a build: app + sync API locally (put SYNC_TOKEN=... in .dev.vars)
 ```
