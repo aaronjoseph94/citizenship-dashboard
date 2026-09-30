@@ -161,7 +161,13 @@ export default class App extends Component {
   bv(src, ms) { const u = num((this.state.bench[src] || {})[ms]); return u != null ? u : this.liveVal(src, ms); }
   // A source's total is AOR → oath (IRCC's basis). Without one, sum the post-AOR milestones; Submit → AOR is not part of it.
   srcTotal(id) { const t = this.bv(id, 'total'); if (t != null) return t; const p = ['test', 'decision', 'oath'].map(k => this.bv(id, k)); return p.some(x => x == null) ? null : r1(p.reduce((a, c) => a + c, 0)); }
-  avg(ms) { const v = SOURCES.map(s => ms === 'total' ? this.srcTotal(s.id) : this.bv(s.id, ms)).filter(x => x != null); return v.length ? v.reduce((a, c) => a + c, 0) / v.length : null; }
+  // Cross-source blend for stage ETAs: median of the source medians (same basis as the Process table).
+  med(ms) {
+    const v = SOURCES.map(s => ms === 'total' ? this.srcTotal(s.id) : this.bv(s.id, ms)).filter(x => x != null).sort((a, b) => a - b);
+    if (!v.length) return null;
+    const m = v.length >> 1;
+    return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
+  }
   // Overview footnote: name only the sources that actually refreshed, and flag the rest.
   freshness(live) {
     const rows = SOURCES.map(x => ({ label: x.label, l: (live.sources || {})[x.id] || {} }));
@@ -225,7 +231,7 @@ export default class App extends Component {
     const day = Math.max(1, dayNum(today) - dayNum(applied) + 1);
     const sts = STAGES.map(x => Object.assign({}, x, this.st(x.id)));
     const aorDate = sts[0].status === 'done' ? parse(sts[0].date) : null;
-    const aAor = this.avg('aor'), aTest = this.avg('test'), aDec = this.avg('decision'), aOath = this.avg('oath'), aTotal = this.avg('total');
+    const aAor = this.med('aor'), aTest = this.med('test'), aDec = this.med('decision'), aOath = this.med('oath'), aTotal = this.med('total');
     const aorEta = aorDate || (aAor != null ? addM(applied, aAor) : null);
     const testActual = sts[5].status === 'done' ? parse(sts[5].date) : null;
     const testEta = testActual || (aorEta && aTest != null ? addM(aorEta, aTest) : null);
@@ -443,7 +449,7 @@ export default class App extends Component {
 
       <section className="grid" style={{ marginTop: 16, gridTemplateColumns: 'repeat(auto-fit,minmax(min(440px,100%),1fr))' }}>
         <div className="card">
-          <div className="row-between"><h2 className="h2">Average wait times</h2><span style={{ fontSize: 12.5, color: '#425466' }}>Months · <span style={{ color: '#0B5ED7' }}>blue</span> = auto-fetched</span></div>
+          <div className="row-between"><h2 className="h2">Median wait times</h2><span style={{ fontSize: 12.5, color: '#425466' }}>Months · <span style={{ color: '#0B5ED7' }}>blue</span> = auto-fetched medians</span></div>
           <div style={{ overflowX: 'auto', marginTop: 8 }}>
             <table style={{ width: '100%', minWidth: 480, borderCollapse: 'collapse', fontSize: 13.5 }}>
               <thead><tr><th>Milestone</th>{SOURCES.map(src => <th key={src.id} style={{ textAlign: 'right', padding: '10px 4px' }}>{src.label}</th>)}</tr></thead>
@@ -465,7 +471,7 @@ export default class App extends Component {
               </tbody>
             </table>
           </div>
-          <p style={{ margin: '10px 0 0', fontSize: 12.5, color: '#425466', lineHeight: 1.5 }}>IRCC publishes {r1(this.liveVal('ircc', 'total'))} months for a citizenship grant, counted from AOR. Blue numbers are pulled automatically every 2 days; type in a cell to override it, clear it to go back. The total (AOR → oath) is used if set, otherwise AOR → Test, Test → Decision and Decision → Oath are summed.</p>
+          <p style={{ margin: '10px 0 0', fontSize: 12.5, color: '#425466', lineHeight: 1.5 }}>Each blue cell is a median (not a mean): Reddit and ImmiTracker from applicant timelines, IRCC from the published citizenship-grant figure ({r1(this.liveVal('ircc', 'total'))} months from AOR). Pulled every 2 days; type in a cell to override it, clear it to go back. The total (AOR → oath) is used if set, otherwise AOR → Test, Test → Decision and Decision → Oath are summed.</p>
           {s.live && <p className="src-note">{s.live.updated ? 'Last fetch ' + fmt(new Date(s.live.updated)) : 'Not fetched yet'}. {SOURCES.map(src => { const l = liveSrc(src.id); return l ? <span key={src.id}><a href={l.url} target="_blank" rel="noreferrer">{src.label}</a>{l.ok ? (l.stale && l.stale.length ? ' (some figures kept from an earlier run)' : '') : ' (unavailable: ' + (l.error || 'no data') + ')'}{'. '}</span> : null; })}</p>}
         </div>
         <div className="card">

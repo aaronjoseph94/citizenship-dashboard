@@ -92,29 +92,64 @@ async function redditLive(id, token) {
   throw lastErr;
 }
 
-// Archives that mirror Reddit and are reachable when reddit.com blocks datacenter IPs (e.g. GitHub runners).
+// Archives that mirror Reddit when reddit.com blocks datacenter IPs (e.g. GitHub runners).
+// Arctic Shift: small pages + t3_ link_id. limit=auto and bare ids often 422/timeout under load.
 async function arcticShift(id) {
-  const out = []; let after = 0;
-  for (let page = 0; page < 30; page++) {
-    const j = await getJSON(`https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_${id}&limit=auto&sort=asc${after ? '&after=' + after : ''}`);
-    const rows = j.data || [];
+  const out = []; let after = 0; let lastErr; let pageSize = 25;
+  for (let page = 0; page < 120; page++) {
+    let rows = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        // Smaller pages when the archive is timing out (common right after another megathread pull).
+        const limit = attempt >= 2 ? 10 : pageSize;
+        const j = await getJSON(`https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_${id}&limit=${limit}&sort=asc${after ? '&after=' + after : ''}`);
+        if (j.error) throw new Error(j.error);
+        rows = j.data || [];
+        pageSize = limit;
+        break;
+      } catch (e) {
+        lastErr = e;
+        await sleep(3000 * (attempt + 1));
+      }
+    }
+    if (!rows) {
+      // Keep what we already paged; a mid-run timeout is common under Arctic Shift load.
+      if (out.length) { log('arctic-shift stopping early:', lastErr?.message, `(kept ${out.length})`); break; }
+      throw lastErr || new Error('arctic-shift failed');
+    }
     rows.forEach(d => out.push({ id: d.id, body: d.body, created_utc: d.created_utc }));
-    if (rows.length < 100) break;
+    if (rows.length < pageSize) break;
     after = rows[rows.length - 1].created_utc + 1;
-    await sleep(500);
+    await sleep(2500);
   }
+  if (!out.length) throw lastErr || new Error('arctic-shift empty');
   return out;
 }
 async function pullPush(id) {
-  const out = []; let after = 0;
-  for (let page = 0; page < 30; page++) {
-    const j = await getJSON(`https://api.pullpush.io/reddit/search/comment/?link_id=${id}&size=100&sort=asc&sort_type=created_utc${after ? '&after=' + after : ''}`);
-    const rows = j.data || [];
+  const out = []; let after = 0; let lastErr;
+  for (let page = 0; page < 40; page++) {
+    let rows = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      try {
+        const j = await getJSON(`https://api.pullpush.io/reddit/search/comment/?link_id=${id}&size=100&sort=asc&sort_type=created_utc${after ? '&after=' + after : ''}`);
+        if (j.error) throw new Error(j.error);
+        rows = j.data || [];
+        break;
+      } catch (e) {
+        lastErr = e;
+        await sleep(4000 * (attempt + 1));
+      }
+    }
+    if (!rows) {
+      if (out.length) { log('pullpush stopping early:', lastErr?.message); break; }
+      throw lastErr || new Error('pullpush failed');
+    }
     rows.forEach(d => out.push({ id: d.id, body: d.body, created_utc: d.created_utc }));
     if (rows.length < 100) break;
     after = rows[rows.length - 1].created_utc;
-    await sleep(500);
+    await sleep(2500);
   }
+  if (!out.length) throw lastErr || new Error('pullpush empty');
   return out;
 }
 
@@ -122,10 +157,11 @@ async function fetchThreadComments(id, token) {
   const byId = new Map(), via = [], errors = [];
   // First copy wins: live Reddit runs first and carries later edits ("EDIT: oath Jun 20") that the archives may have missed.
   const add = (name, rows) => { for (const r of rows) if (r.body && !/^\[(deleted|removed)\]$/.test(r.body) && !byId.has(r.id)) byId.set(r.id, r); via.push(`${name}:${rows.length}`); };
+  // Reddit is usually blocked from CI; arctic-shift (small pages) is the reliable path. PullPush is last and often rate-limits.
   for (const [name, fn] of [['reddit', () => redditLive(id, token)], ['arctic-shift', () => arcticShift(id)], ['pullpush', () => pullPush(id)]]) {
     try { add(name, await fn()); } catch (e) { errors.push(`${name}: ${e.message}`); }
-    // Live Reddit is complete; the archives only fill gaps, so stop once one of them has worked too.
-    if (via.length >= 2) break;
+    // One solid archive is enough when live Reddit is blocked.
+    if (byId.size >= 50) break;
   }
   if (!byId.size) throw new Error(errors.join('; ') || 'no comments');
   return { comments: [...byId.values()], via: via.join(', '), errors };
@@ -396,7 +432,8 @@ function selName(sel) { return sel.NativeReferenceName || sel.Name || JSON.strin
 const NOT_AVERAGE = /^\s*((#|(number|num)\b)(?!\s*(of\s+)?(days?|weeks?|months?)\b)|(count|countnonnull|sum|min|max|minimum|maximum)\b)|\b(fastest|slowest|shortest|longest)\b/i;
 // Power BI aggregation functions: 0 Sum, 1 Avg, 2 Count, 3 Min, 4 Max, 5 CountNonNull, 6 Median.
 const aggOk = sel => sel.Aggregation == null || [1, 6].includes(sel.Aggregation.Function);
-const isAverage = (sel, name) => (sel.Aggregation && [1, 6].includes(sel.Aggregation.Function)) || /\b(avg|average|mean|median)\b/i.test(name);
+const isMedianAgg = (sel, name) => (sel.Aggregation && sel.Aggregation.Function === 6) || /\bmedian\b/i.test(name);
+const isAverage = (sel, name) => isMedianAgg(sel, name) || (sel.Aggregation && sel.Aggregation.Function === 1) || /\b(avg|average|mean)\b/i.test(name);
 
 // Specific milestone spans named in a card's field or title.
 function classifySpan(name) {
@@ -496,15 +533,17 @@ async function fetchImmi() {
         names.forEach((nm, i) => {
           const val = vals[i], sel = v.q.Select[i]; if (typeof val !== 'number' || !aggOk(sel) || NOT_AVERAGE.test(nm)) return;
           const label = `${v.title} ${nm}`; const k = classifyCard(nm, v.title); if (!k) return;
-          // First match wins, except that an explicit average/median replaces a non-average one.
-          const avg = isAverage(sel, label);
-          if (found[k] != null && !(avg && !found[k + 'Avg'])) return;
-          const l = label.toLowerCase();
+          // Prefer median over mean/average; otherwise first match wins.
+          const med = isMedianAgg(sel, label), avg = isAverage(sel, label);
+          if (found[k] != null && !(med && !found[k + 'Med']) && !(avg && !found[k + 'Avg'] && !found[k + 'Med'])) return;
           // ImmiTracker measures are in days unless the label says otherwise; the field name's unit beats the title's
           // ("Avg Days AOR to Oath" under a "last 12 months" title is days).
           const unit = t => /week/.test(t) ? 4.345 : /day/.test(t) ? MONTH_DAYS : /month/.test(t) ? 1 : null;
           const months = val / (unit(nm.toLowerCase()) ?? unit(String(v.title).toLowerCase()) ?? MONTH_DAYS);
-          if (months > 0 && months < 60) { found[k] = r1(months); found[k + 'Field'] = label.trim(); found[k + 'Avg'] = avg; }
+          if (months > 0 && months < 60) {
+            found[k] = r1(months); found[k + 'Field'] = label.trim();
+            found[k + 'Avg'] = avg; found[k + 'Med'] = med;
+          }
         });
       }
     } catch (e) {
@@ -544,6 +583,8 @@ async function main() {
   const sources = {};
   for (const [k, fn] of Object.entries(jobs)) {
     if (only && !only.includes(k)) { sources[k] = prev.sources?.[k] || {}; continue; }
+    // Space Reddit megathread pulls so Arctic Shift / PullPush rate limits recover.
+    if ((k === 'r26' || k === 'r25') && Object.keys(sources).some(s => s === 'r26' || s === 'r25')) await sleep(15000);
     try {
       const res = await fn(), old = prev.sources?.[k] || {};
       // A milestone whose own query failed keeps its previous value (marked stale) instead of vanishing.
@@ -554,7 +595,15 @@ async function main() {
     catch (e) {
       log(k, 'FAILED:', e.message);
       const old = prev.sources?.[k] || {};
-      sources[k] = { ...old, ok: false, error: e.message.slice(0, 300), url: old.url || (k === 'ircc' ? IRCC_PAGE : k === 'immi' ? PBI.url : THREADS[k].url) };
+      const kept = ['aor', 'test', 'decision', 'oath', 'total', 'fullTotal'].some(m => old[m] != null);
+      // Keep last good medians in the table; mark the refresh failed without wiping the figures.
+      sources[k] = {
+        ...old,
+        ok: kept,
+        error: e.message.slice(0, 300),
+        url: old.url || (k === 'ircc' ? IRCC_PAGE : k === 'immi' ? PBI.url : THREADS[k].url),
+        ...(kept ? { stale: [...new Set([...(old.stale || []), 'refresh'])] } : {})
+      };
       if (k === 'ircc' && sources[k].total == null) sources[k].total = 12; // last published figure, Sept 2026
     }
   }
