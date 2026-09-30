@@ -11,9 +11,9 @@ the browser's localStorage (`citizenship-tracker-v1`).
 
 | Column | Source | How |
 | --- | --- | --- |
-| IRCC | canada.ca processing-times data | IRCC's processing-time JSON, falling back to the processing-times page. Last published figure (12 months) is kept if both fail. |
+| IRCC | canada.ca processing-times data | `flpt-en.json`, the file IRCC's processing-times tool reads: `current-flpt.citizen-grants` (e.g. "About 12 months"). If it can't be read, the previous figure (12 months) is kept and IRCC is marked unavailable. |
 | Reddit 2026 / 2025 | r/ImmigrationCanada citizenship megathreads | Comments are pulled from Reddit (OAuth if secrets are set, else the public `.json` endpoint), falling back to the Arctic Shift and PullPush archives when Reddit blocks the runner. Free-form timelines ("Applied Feb 2026, AOR May, Test Jul, Oath Oct") are parsed and the **median** of each span is used (needs ≥2 timelines). |
-| ImmiTracker | public Power BI report | Queries the report's public `querydata` API and picks single-value visuals whose names describe a span (e.g. "AOR to Oath days"). Everything it read is dumped to `public/data/immitracker-raw.json` for checking. |
+| ImmiTracker | public Power BI report | Queries the report's public `querydata` API (with the report's own filters and slicer selections applied) and picks average/median single-value visuals whose names describe a span (e.g. "Average of AOR to Oath days"); count/min/max cards are ignored. Everything it read is dumped to `public/data/immitracker-raw.json` for checking. |
 
 "Total" means AOR → oath, matching IRCC's published figure.
 

@@ -67,8 +67,12 @@ export default class App extends Component {
   state = Object.assign(load(), { live: null });
 
   componentDidMount() {
+    // Another open tab saved: adopt its data so this tab never writes a stale copy over it. Keep this tab's view and drafts.
+    this.onStorage = e => { if (e.key !== KEY && e.key !== null) return; const d = load(); delete d.drafts; delete d.tab; this.setState(d); };
+    window.addEventListener('storage', this.onStorage);
     fetch('./data/wait-times.json', { cache: 'no-cache' }).then(r => r.ok ? r.json() : null).then(live => live && this.setState({ live })).catch(() => {});
   }
+  componentWillUnmount() { window.removeEventListener('storage', this.onStorage); }
   save() { const o = {}; for (const k of PERSIST) o[k] = this.state[k]; try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) { /* ignore */ } }
   up(fn) { this.setState(fn, () => this.save()); }
   go(tab) { this.up({ tab }); window.scrollTo(0, 0); }
@@ -80,8 +84,19 @@ export default class App extends Component {
   }
   // User entry wins; otherwise the auto-fetched value.
   bv(src, ms) { const u = num((this.state.bench[src] || {})[ms]); return u != null ? u : this.liveVal(src, ms); }
-  srcTotal(id) { const t = this.bv(id, 'total'); if (t != null) return t; const p = ['aor', 'test', 'decision', 'oath'].map(k => this.bv(id, k)); return p.some(x => x == null) ? null : r1(p.reduce((a, c) => a + c, 0)); }
+  // A source's total is AOR → oath (IRCC's basis). Without one, sum the post-AOR milestones; Submit → AOR is not part of it.
+  srcTotal(id) { const t = this.bv(id, 'total'); if (t != null) return t; const p = ['test', 'decision', 'oath'].map(k => this.bv(id, k)); return p.some(x => x == null) ? null : r1(p.reduce((a, c) => a + c, 0)); }
   avg(ms) { const v = SOURCES.map(s => ms === 'total' ? this.srcTotal(s.id) : this.bv(s.id, ms)).filter(x => x != null); return v.length ? v.reduce((a, c) => a + c, 0) / v.length : null; }
+  // Overview footnote: name only the sources that actually refreshed, and flag the rest.
+  freshness(live) {
+    const rows = SOURCES.map(x => ({ label: x.label, l: (live.sources || {})[x.id] || {} }));
+    const ok = rows.filter(x => x.l.ok), bad = rows.filter(x => !x.l.ok);
+    const newest = Math.max(...ok.map(x => Date.parse(x.l.fetched || live.updated)).filter(n => !isNaN(n)));
+    const list = a => a.map(x => x.label).join(', ');
+    const head = ok.length && isFinite(newest) ? `Wait times from ${list(ok)} auto-updated ${fmt(new Date(newest))} (checked every 2 days).`
+      : live.updated ? `No source could be refreshed on the last check (${fmt(new Date(live.updated))}).` : 'Wait times have not been fetched yet.';
+    return head + (bad.length && ok.length ? ` Not refreshed: ${list(bad)}; previous figures kept where known (see Process).` : bad.length ? ' Showing the last known figures (see Process).' : '');
+  }
   st(id) { return Object.assign({ status: 'todo', date: '', note: '' }, this.state.stages[id] || {}); }
 
   cycle(id) {
@@ -118,7 +133,9 @@ export default class App extends Component {
     const decEta = testEta && aDec != null ? addM(testEta, aDec) : null;
     const oathBase = aorDate || applied;
     const oathDone = sts[6].status === 'done';
-    const oathEta = oathDone ? parse(sts[6].date) : (aTotal != null ? addM(oathBase, aTotal) : (decEta && aOath != null ? addM(decEta, aOath) : null));
+    // Stage/timeline ETA counts the total from the (estimated) AOR so it lands after the test estimate; the hero and bands
+    // keep oathBase and say "+ AOR wait".
+    const oathEta = oathDone ? parse(sts[6].date) : (aTotal != null ? addM(aorDate || aorEta || applied, aTotal) : (decEta && aOath != null ? addM(decEta, aOath) : null));
     const totals = SOURCES.map(src => ({ src, t: this.srcTotal(src.id) })).filter(x => x.t != null);
     const earliest = totals.length ? totals.reduce((a, b) => b.t < a.t ? b : a) : null;
     const estOath = oathDone ? fmtM(parse(sts[6].date)) : earliest ? fmtM(addM(oathBase, earliest.t)) : '—';
@@ -237,7 +254,7 @@ export default class App extends Component {
         <div className="card" style={{ display: 'flex', flexDirection: 'column' }}>
           <div className="row-between"><h2 className="h2">Next actions</h2><button className="link" onClick={() => this.go('process')}>All reminders →</button></div>
           <ul style={{ listStyle: 'none', margin: '14px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {nextTodos.map(t => <li key={t.id} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', fontSize: 14, lineHeight: 1.4 }}><input type="checkbox" className="chk" style={{ marginTop: 1 }} checked={t.done} onChange={() => this.toggleIn('todos', t.id, 'done')} /><span>{t.text}</span></li>)}
+            {nextTodos.map(t => <li key={t.id} style={{ display: 'flex', gap: 12, alignItems: 'flex-start', fontSize: 14, lineHeight: 1.4 }}><input type="checkbox" className="chk" style={{ marginTop: 1 }} checked={t.done} onChange={() => this.toggleIn('todos', t.id, 'done')} /><span className="wrap">{t.text}</span></li>)}
           </ul>
           {!nextTodos.length && <p style={{ margin: '14px 0 0', fontSize: 14, color: '#425466' }}>Nothing pending. Add reminders in Process.</p>}
         </div>
@@ -276,7 +293,7 @@ export default class App extends Component {
             <div style={{ position: 'relative', height: 18 }}><span style={{ position: 'absolute', left: 0 }}>{d.axisStart}</span><span style={{ position: 'absolute', left: `clamp(0px, ${d.todayPct} - 18px, calc(100% - 36px))`, color: '#1877F2', fontWeight: 600 }}>Today</span><span style={{ position: 'absolute', right: 0 }}>{d.axisEnd}</span></div>
           </div>
         </div>
-        {live && <p className="src-note">Wait times auto-updated {fmt(new Date(live.updated))} (every 2 days) from IRCC, the r/ImmigrationCanada megathreads and ImmiTracker.</p>}
+        {live && <p className="src-note">{this.freshness(live)}</p>}
       </section>
     </>;
   }
@@ -343,8 +360,8 @@ export default class App extends Component {
               </tbody>
             </table>
           </div>
-          <p style={{ margin: '10px 0 0', fontSize: 12.5, color: '#425466', lineHeight: 1.5 }}>IRCC publishes {r1(this.liveVal('ircc', 'total'))} months for a citizenship grant, counted from AOR. Blue numbers are pulled automatically every 2 days; type in a cell to override it, clear it to go back. The total is used if set, otherwise the milestones are summed.</p>
-          {s.live && <p className="src-note">Last fetch {fmt(new Date(s.live.updated))}. {SOURCES.map(src => { const l = liveSrc(src.id); return l ? <span key={src.id}><a href={l.url} target="_blank" rel="noreferrer">{src.label}</a>{l.ok ? '' : ' (unavailable: ' + (l.error || 'no data') + ')'}{'. '}</span> : null; })}</p>}
+          <p style={{ margin: '10px 0 0', fontSize: 12.5, color: '#425466', lineHeight: 1.5 }}>IRCC publishes {r1(this.liveVal('ircc', 'total'))} months for a citizenship grant, counted from AOR. Blue numbers are pulled automatically every 2 days; type in a cell to override it, clear it to go back. The total (AOR → oath) is used if set, otherwise AOR → Test, Test → Decision and Decision → Oath are summed.</p>
+          {s.live && <p className="src-note">{s.live.updated ? 'Last fetch ' + fmt(new Date(s.live.updated)) : 'Not fetched yet'}. {SOURCES.map(src => { const l = liveSrc(src.id); return l ? <span key={src.id}><a href={l.url} target="_blank" rel="noreferrer">{src.label}</a>{l.ok ? '' : ' (unavailable: ' + (l.error || 'no data') + ')'}{'. '}</span> : null; })}</p>}
         </div>
         <div className="card">
           <h2 className="h2">Key dates</h2>
@@ -352,7 +369,7 @@ export default class App extends Component {
             {d.timeline.map((e, i) => (
               <li key={i} style={{ display: 'grid', gridTemplateColumns: '112px minmax(0,1fr) auto', gap: 12, alignItems: 'baseline', padding: '9px 0', borderBottom: '1px solid #EEF2F6', fontSize: 14 }}>
                 <span style={{ color: '#425466', fontVariantNumeric: 'tabular-nums', fontSize: 13 }}>{fmt(e.d)}</span>
-                <span style={{ color: e.est ? '#8898AA' : '#0A2540' }}>{e.label}</span>
+                <span className="wrap" style={{ color: e.est ? '#8898AA' : '#0A2540' }}>{e.label}</span>
                 <button className="x" title="Remove" style={{ visibility: e.id ? 'visible' : 'hidden' }} onClick={() => e.id && this.removeIn('events', e.id)}>×</button>
               </li>
             ))}
@@ -385,7 +402,7 @@ export default class App extends Component {
           <button className="btn" onClick={() => this.addNote()}>Add note</button>
         </div>
         <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0, display: 'flex', flexDirection: 'column' }}>
-          {s.notes.map(n => <li key={n.id} style={{ display: 'grid', gridTemplateColumns: '112px minmax(0,1fr) auto', gap: 12, padding: '12px 0', borderTop: '1px solid #EEF2F6', fontSize: 14, lineHeight: 1.5 }}><span style={{ color: '#425466', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{fmt(parse(n.date))}</span><span style={{ whiteSpace: 'pre-wrap' }}>{n.text}</span><button className="x" style={{ alignSelf: 'start' }} title="Remove" onClick={() => this.removeIn('notes', n.id)}>×</button></li>)}
+          {s.notes.map(n => <li key={n.id} style={{ display: 'grid', gridTemplateColumns: '112px minmax(0,1fr) auto', gap: 12, padding: '12px 0', borderTop: '1px solid #EEF2F6', fontSize: 14, lineHeight: 1.5 }}><span style={{ color: '#425466', fontSize: 13, fontVariantNumeric: 'tabular-nums' }}>{fmt(parse(n.date))}</span><span className="wrap" style={{ whiteSpace: 'pre-wrap' }}>{n.text}</span><button className="x" style={{ alignSelf: 'start' }} title="Remove" onClick={() => this.removeIn('notes', n.id)}>×</button></li>)}
         </ul>
         {!s.notes.length && <p style={{ margin: '12px 0 0', fontSize: 13.5, color: '#425466' }}>No notes yet.</p>}
       </section>

@@ -44,6 +44,8 @@ main{position:relative;z-index:1;max-width:1120px;width:100%;margin:0 auto;paddi
 .seg button.on{background:#fff;color:#0A2540;box-shadow:0 1px 2px rgba(0,0,0,.08)}
 .list{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column}
 .li{display:flex;gap:12px;align-items:center;padding:9px 0;border-bottom:1px solid #EEF2F6;font-size:14px}
+/* Long unbroken text (pasted URLs) wraps instead of widening the page at phone width. */
+.li>span,.wrap{min-width:0;overflow-wrap:anywhere}
 th{text-align:left;font-weight:500;color:#425466;padding:10px 0;border-bottom:1px solid #E3E8EE;font-size:12.5px}
 .src-note{margin:10px 0 0;font-size:12px;color:#8898AA;line-height:1.5}
 .src-note a{color:#8898AA}

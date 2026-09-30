@@ -14,6 +14,8 @@ permissions:
 concurrency:
   group: update-and-deploy
   cancel-in-progress: false
+  # Keep every pending run (FIFO) so a push can't replace a queued data refresh.
+  queue: max
 
 jobs:
   update-data:

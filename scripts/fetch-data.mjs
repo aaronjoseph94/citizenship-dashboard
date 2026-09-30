@@ -14,9 +14,12 @@ const THREADS = {
   r26: { id: '1q6vm0e', year: 2026, url: 'https://www.reddit.com/r/ImmigrationCanada/comments/1q6vm0e/megathread_processing_times_citizenship_2026/' },
   r25: { id: '1hq3gg4', year: 2025, url: 'https://www.reddit.com/r/ImmigrationCanada/comments/1hq3gg4/megathread_processing_times_citizenship_2025/' }
 };
-const IRCC_JSON = ['https://www.canada.ca/content/dam/ircc/documents/json/data-ptime-non-country-en.json', 'https://www.canada.ca/content/dam/ircc/documents/json/data-ptime-en.json'];
+const IRCC_FLPT = 'https://www.canada.ca/content/dam/ircc/documents/json/flpt-en.json';
 const IRCC_PAGE = 'https://www.canada.ca/en/immigration-refugees-citizenship/services/application/check-processing-times.html';
-const PBI = { key: 'd54cab2b-261a-41a6-a6aa-5b2dabee1cc0', tenant: '57df1cd8-6e02-422f-948b-3b953584bd43', url: 'https://app.powerbi.com/view?r=eyJrIjoiZDU0Y2FiMmItMjYxYS00MWE2LWFhOWEtNWIyZGFiZWUxY2MwIiwidCI6IjU3ZGYxY2Q4LTZlMDItNDIyZi05NDhiLTNiOTUzNTg0YmQ0MyJ9' };
+const PBI_URL = 'https://app.powerbi.com/view?r=eyJrIjoiZDU0Y2FiMmItMjYxYS00MWE2LWFhOWEtNWIyZGFiZWUxY2MwIiwidCI6IjU3ZGYxY2Q4LTZlMDItNDIyZi05NDhiLTNiOTUzNTg0YmQ0MyJ9';
+// The report key (k) and tenant (t) are read from the public link itself so they can't drift from it.
+const PBI_R = JSON.parse(Buffer.from(new URL(PBI_URL).searchParams.get('r'), 'base64').toString());
+const PBI = { key: PBI_R.k, tenant: PBI_R.t, url: PBI_URL };
 
 const log = (...a) => console.log('[fetch-data]', ...a);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -40,21 +43,12 @@ const getJSON = async (url, opts) => (await http(url, opts)).json();
 // ---------------------------------------------------------------- IRCC
 async function fetchIrcc() {
   const toMonths = s => { const m = String(s).match(/([\d.]+)\s*(month|week|day)/i); if (!m) return null; const n = parseFloat(m[1]); return /week/i.test(m[2]) ? r1(n / 4.345) : /day/i.test(m[2]) ? r1(n / MONTH_DAYS) : n; };
-  for (const url of IRCC_JSON) {
-    try {
-      const j = await getJSON(url);
-      const hits = [];
-      const walk = (o, path) => { if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) walk(v, path.concat(k)); else if (path.join('.').match(/grant/i)) hits.push([path.join('.'), o]); };
-      walk(j, []);
-      const hit = hits.find(([, v]) => toMonths(v) != null);
-      if (hit) return { ok: true, total: toMonths(hit[1]), raw: `${hit[0]} = ${hit[1]}`, url: IRCC_PAGE, lastUpdated: j['default-update']?.lastupdated || j.citizenship?.lastupdated || null };
-    } catch (e) { log('IRCC json', url, e.message); }
-  }
-  // Fallback: the rendered page text, e.g. "Citizenship grant ... 12 months".
-  const html = await (await http(IRCC_PAGE)).text();
-  const m = html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').match(/citizenship grant[^.]{0,200}?(\d+(?:\.\d+)?)\s*months?/i);
-  if (m) return { ok: true, total: parseFloat(m[1]), raw: m[0].slice(0, 200), url: IRCC_PAGE };
-  throw new Error('grant time not found in IRCC data');
+  // The processing-times tool renders "Citizenship grant" from this file: current-flpt["citizen-grants"] = "About 12 months".
+  const j = await getJSON(IRCC_FLPT);
+  const v = j['current-flpt']?.['citizen-grants'];
+  const total = toMonths(v);
+  if (total == null) throw new Error(`current-flpt.citizen-grants not found or unreadable in flpt-en.json (top-level keys: ${Object.keys(j).join(', ')})`);
+  return { ok: true, total, raw: `current-flpt.citizen-grants = ${v}`, url: IRCC_PAGE, lastUpdated: j['default-update']?.flpt_lastupdated || null, waiting: j['total-people']?.['citizen-grants'] || null };
 }
 
 // ---------------------------------------------------------------- Reddit
@@ -143,6 +137,9 @@ const MON = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|a
 const NUM_RE = /\b(\d{1,2})[/.-](\d{1,2})[/.-](20\d\d|\d\d)\b/g;
 // order: 'MD' | 'DM' for dd/mm vs mm/dd numeric dates, 'auto' to decide per date.
 const DATE_RES = [
+  // 10-Nov-2024, 03/Jan/25, Nov-10-2024: only these tight forms take a 2-digit year, so clock times like 'Jun 10, 10:30' stay safe.
+  [new RegExp(`\\b(\\d{1,2})[-/]${MON}[-/](20\\d\\d|\\d\\d)\\b`, 'gi'), m => ({ y: +m[3] < 100 ? 2000 + +m[3] : +m[3], mo: MONTHS[m[2].slice(0, 3).toLowerCase()], d: +m[1] })],
+  [new RegExp(`\\b${MON}[-/](\\d{1,2})[-/](20\\d\\d|\\d\\d)\\b`, 'gi'), m => ({ y: +m[3] < 100 ? 2000 + +m[3] : +m[3], mo: MONTHS[m[1].slice(0, 3).toLowerCase()], d: +m[2] })],
   [new RegExp(`\\b(20\\d\\d)[-/.](\\d{1,2})[-/.](\\d{1,2})\\b`, 'g'), m => ({ y: +m[1], mo: +m[2] - 1, d: +m[3] })],
   [NUM_RE, (m, order) => { const a = +m[1], b = +m[2]; const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; const dm = order === 'DM' || (order === 'auto' && a > 12); return dm ? { y, mo: b - 1, d: a } : { y, mo: a - 1, d: b }; }],
   [new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?${MON},?\\s*(20\\d\\d)?\\b`, 'gi'), m => ({ y: m[3] ? +m[3] : null, mo: MONTHS[m[2].slice(0, 3).toLowerCase()], d: +m[1] })],
@@ -152,8 +149,8 @@ const DATE_RES = [
 ];
 // Milestone keywords. On a tie, the entry listed first wins, so the invite variants sit before their milestone.
 const KEYS = [
-  ['oathInvite', /(oath|ceremony)\s*(ceremony\s*)?(invit\w*|inv\b|email|letter|notice)|invit\w*\s*(to|for)\s*(the\s*)?(oath|ceremony)(\s*ceremony)?/gi],
-  ['oath', /\boath|ceremony/gi],
+  ['oathInvite', /(oath|ceremony)\s*(ceremony\s*)?(invit\w*|inv\b|email|letter|notice)|invit\w*\s*(to|for)\s*(the\s*)?(oath|ceremony)(\s*ceremony)?|\boi\b/gi],
+  ['oath', /\boath|ceremony|\bo[dt]\b/gi],
   ['decision', /decision|approv|\bdm\b|\bdm[12]\b/gi],
   ['testInvite', /(test|exam)\s*(invit\w*|inv\b|email|link)|invit\w*\s*(to|for)\s*(the\s*)?(test|exam)|\bti\b/gi],
   ['test', /\btest|\bexam|interview|\btd\b/gi],
@@ -161,7 +158,7 @@ const KEYS = [
   ['submit', /\bappl(y|ied|ication)|\bsubmi|\bmailed\b|\bapp\b|\bad\b|\bpaper\b/gi]
 ];
 const ORDER = ['submit', 'aor', 'testInvite', 'test', 'decision', 'oathInvite', 'oath'];
-const KEYWORD_RE = /\b(aor|oath|ceremony|test|exam|invite|dm|decision|approv\w*|appl\w*|submi\w*)/i;
+const KEYWORD_RE = /\b(aor|oath|ceremony|test|exam|invite|dm|oi|od|ot|decision|approv\w*|appl\w*|submi\w*)/i;
 
 // 'MD' / 'DM' when the numeric dates in a comment settle the order, 'ambiguous' when none can, 'auto' when they conflict.
 function numericOrder(text) {
@@ -228,26 +225,32 @@ function timelineFor(text, createdUtc, threadYear, order) {
   const lineStart = i => text.lastIndexOf('\n', dates[i].s - 1) + 1;
   const sameLineBefore = dates.filter((dt, i) => keyIn(text.slice(Math.max(lineStart(i), i ? dates[i - 1].e : 0), dt.s), 'before')).length;
   const labels = after.filter(Boolean).length > sameLineBefore ? after : before;
+  // "Oath invite: May 20 for Jun 10": the date after "for" is the ceremony (or test) itself.
+  const EVENT = { testInvite: 'test', oathInvite: 'oath' };
+  for (let i = 1; i < dates.length; i++) if (!labels[i] && EVENT[labels[i - 1]] && /^\s*\(?\s*for\s+(?:(?:the|a|an)\s+)?$/i.test(text.slice(dates[i - 1].e, dates[i].s))) labels[i] = EVENT[labels[i - 1]];
   const ev = {};
-  let prevDate = null;
+  let prevDate = null, prevK = null;
   dates.forEach((dt, i) => {
     const k = labels[i];
     if (!k) return;
+    // "AOR Feb 26 (applied Jan 8)" / "Oath done Jun 10! Applied Jan 8 ...": an earlier milestone written after a later one
+    // is a back-reference, not a date in the next year.
+    const back = prevK != null && ORDER.indexOf(k) < ORDER.indexOf(prevK);
     let y = dt.y;
     if (y == null) {
       y = prevDate ? prevDate.getFullYear() : Math.min(threadYear, created.getFullYear());
       const cand = new Date(y, dt.mo, dt.d);
-      if (prevDate && cand < prevDate - 20 * DAY) y++;
+      if (prevDate && !back && cand < prevDate - 20 * DAY) y++;
       else if (!prevDate && cand > created.getTime() + 31 * DAY) y--;
     }
     const date = new Date(y, dt.mo, dt.d);
     if (date > created.getTime() + 400 * DAY || y < 2019) return; // future-dated scheduled events are OK (ceremony dates), junk isn't
     if (!ev[k]) ev[k] = date;
-    prevDate = date;
+    if (!back) { prevDate = date; prevK = k; }
   });
   const present = ORDER.filter(k => ev[k]);
   const ordered = present.every((k, i) => !i || ev[k] >= ev[present[i - 1]]);
-  const months = (a, b) => (a && b && b > a) ? (b - a) / DAY / MONTH_DAYS : null;
+  const months = (a, b) => (a && b && b >= a) ? (b - a) / DAY / MONTH_DAYS : null;
   const test = ev.test || ev.testInvite;
   // The ceremony date when given; the invite date only when that is all the comment has.
   const oath = ev.oath || ev.oathInvite;
@@ -260,12 +263,14 @@ function timelineFor(text, createdUtc, threadYear, order) {
     // Same semantic as IRCC's published figure (AOR → oath). Keep submit → oath too, for display.
     fullTotal: months(ev.submit, oath)
   };
-  for (const k of Object.keys(out)) if (out[k] != null && (out[k] <= 0 || out[k] > 60)) out[k] = null;
+  // A decision on the test day is common and counts as 0; for the other spans a zero means a mislabel.
+  for (const k of Object.keys(out)) if (out[k] != null && ((out[k] <= 0 && k !== 'decision') || out[k] > 60)) out[k] = null;
   return { out, ordered };
 }
 
 function parseTimeline(body, createdUtc, threadYear) {
-  const text = body.replace(/\*|_|~|`|#/g, ' ');
+  // Lines quoted from the parent comment ('> ...') are someone else's timeline.
+  const text = body.replace(/^[ \t]*(?:>|&gt;).*$/gm, '').replace(/\*|_|~|`|#/g, ' ');
   const order = numericOrder(text);
   let res;
   if (order !== 'ambiguous') res = timelineFor(text, createdUtc, threadYear, order);
@@ -334,18 +339,51 @@ function decodeDsr(result) {
 
 function selName(sel) { return sel.NativeReferenceName || sel.Name || JSON.stringify(sel).slice(0, 80); }
 
+// Count/min/max/sum cards ('Count of AOR to Oath', 'Max of ...') are not typical waits.
+const NOT_AVERAGE = /^\s*(#|(count|countnonnull|number|num|sum|min|max|minimum|maximum)\b)|\b(fastest|slowest|shortest|longest)\b/i;
+// Power BI aggregation functions: 0 Sum, 1 Avg, 2 Count, 3 Min, 4 Max, 5 CountNonNull, 6 Median.
+const aggOk = sel => sel.Aggregation == null || [1, 6].includes(sel.Aggregation.Function);
+const isAverage = (sel, name) => (sel.Aggregation && [1, 6].includes(sel.Aggregation.Function)) || /\b(avg|average|mean|median)\b/i.test(name);
+
 function classify(name) {
   const n = name.toLowerCase().replace(/[_.]/g, ' ');
   const to = '\\W*(to|-|→|>|until)\\W*';
   if (new RegExp(`(submi|appl|\\bad\\b|\\bapp\\b)\\w*${to}aor`).test(n)) return 'aor';
   if (new RegExp(`aor${to}(test|invite|exam)`).test(n)) return 'test';
   if (new RegExp(`(test|exam)\\w*${to}(decision|dm|approv)`).test(n)) return 'decision';
-  if (new RegExp(`(decision|dm|approv)\\w*${to}(oath|ceremony)`).test(n)) return 'oath';
-  if (new RegExp(`aor${to}(oath|ceremony|citizen)`).test(n)) return 'total';
-  if (new RegExp(`(submi|appl|\\bapp\\b)\\w*${to}(oath|ceremony|citizen)`).test(n)) return 'fullTotal';
+  // An oath invite/letter is not the ceremony, so it never ends a total or oath span.
+  const oath = '(oath|ceremony|citizen)(?!\\W*(invit|inv\\b|letter|email|notice))';
+  if (new RegExp(`(decision|dm|approv)\\w*${to}${oath}`).test(n)) return 'oath';
+  if (new RegExp(`aor${to}${oath}`).test(n)) return 'total';
+  if (new RegExp(`(submi|appl|\\bapp\\b)\\w*${to}${oath}`).test(n)) return 'fullTotal';
+  // Spans ending at the oath invite/letter: used only when no ceremony figure exists.
+  const inv = '(oath|ceremony)\\W*(invit|inv\\b|letter|email|notice)';
+  if (new RegExp(`(decision|dm|approv)\\w*${to}${inv}`).test(n)) return 'oathInv';
+  if (new RegExp(`aor${to}${inv}`).test(n)) return 'totalInv';
+  if (new RegExp(`(submi|appl|\\bapp\\b)\\w*${to}${inv}`).test(n)) return 'fullTotalInv';
   // "Total" alone is often a count card ("Total Applications"); only accept it with a duration word and no count word.
   if (/\b(overall|total|end to end)\b/.test(n) && /(day|week|month|time|wait|processing|duration)/.test(n) && !/(count|number|#|applications?\b|applicants?|cases?|records?|rows)/.test(n)) return 'fullTotal';
   return null;
+}
+
+// Power BI stores filters outside prototypeQuery; the web client adds their Where clauses before querying, so we do too.
+const parseJSON = (s, d) => { try { return typeof s === 'string' ? JSON.parse(s) : (s ?? d); } catch { return d; } };
+function filterDefs(list) { return (Array.isArray(list) ? list : []).map(f => f?.filter).filter(f => f && Array.isArray(f.Where) && f.Where.length); }
+function withFilters(q, filters) {
+  if (!filters.length) return q;
+  const nq = JSON.parse(JSON.stringify(q)); nq.From = nq.From || []; const where = nq.Where ? [...nq.Where] : [];
+  for (const f of filters) {
+    const map = {};
+    for (const fr of f.From || []) {
+      let ex = nq.From.find(x => x.Entity === fr.Entity && (x.Type ?? 0) === (fr.Type ?? 0) && !x.Expression);
+      if (!ex) { let a = fr.Name, i = 1; while (nq.From.some(x => x.Name === a)) a = `${fr.Name}${i++}`; ex = { ...fr, Name: a }; nq.From.push(ex); }
+      map[fr.Name] = ex.Name;
+    }
+    const remap = o => Array.isArray(o) ? o.map(remap) : o && typeof o === 'object' ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, k === 'SourceRef' && v && v.Source in map ? { ...v, Source: map[v.Source] } : remap(v)])) : o;
+    where.push(...remap(f.Where));
+  }
+  nq.Where = where;
+  return nq;
 }
 
 async function fetchImmi() {
@@ -357,39 +395,66 @@ async function fetchImmi() {
   if (!mae) throw lastErr || new Error('Power BI report unreachable');
   const model = mae.models?.[0]; const reportId = mae.exploration?.report?.objectId;
   const visuals = [];
-  for (const sec of mae.exploration?.sections || []) for (const vc of sec.visualContainers || []) {
-    try { const cfg = JSON.parse(vc.config); const q = cfg.singleVisual?.prototypeQuery; if (q?.Select?.length) visuals.push({ page: sec.displayName, name: cfg.name, type: cfg.singleVisual.visualType, title: cfg.singleVisual?.vcObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value || '', q }); } catch { /* skip */ }
+  const reportFilters = filterDefs(parseJSON(mae.exploration?.filters, [])).concat(filterDefs(parseJSON(mae.exploration?.config, {})?.filters));
+  for (const sec of mae.exploration?.sections || []) {
+    const cfgs = (sec.visualContainers || []).map(vc => ({ vc, cfg: parseJSON(vc.config, null) })).filter(x => x.cfg);
+    // Slicer selections saved on the page narrow every visual on it.
+    const slicers = cfgs.filter(x => x.cfg.singleVisual?.visualType === 'slicer').map(x => x.cfg.singleVisual?.objects?.general?.[0]?.properties?.filter?.filter).filter(f => f && Array.isArray(f.Where) && f.Where.length);
+    const pageFilters = reportFilters.concat(filterDefs(parseJSON(sec.filters, [])), slicers);
+    for (const { vc, cfg } of cfgs) {
+      const q = cfg.singleVisual?.prototypeQuery;
+      if (!q?.Select?.length || cfg.singleVisual.visualType === 'slicer') continue;
+      const title = cfg.singleVisual?.vcObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value || '';
+      // The saved vc.query already has the report's filters and slicer state applied; otherwise add them ourselves.
+      const saved = parseJSON(vc.query, null)?.Commands?.[0]?.SemanticQueryDataShapeCommand?.Query;
+      if (saved?.Select?.length === q.Select.length) { visuals.push({ page: sec.displayName, name: cfg.name, type: cfg.singleVisual.visualType, title, q: saved, filtered: 'saved query' }); continue; }
+      const filters = pageFilters.concat(filterDefs(parseJSON(vc.filters, [])));
+      visuals.push({ page: sec.displayName, name: cfg.name, type: cfg.singleVisual.visualType, title, q: withFilters(q, filters), filtered: filters.length });
+    }
   }
   const raw = { fetched: new Date().toISOString(), host, pages: (mae.exploration?.sections || []).map(s => s.displayName), visuals: [] };
-  const found = {};
+  const found = {}, errors = [], missedKeys = new Set();
   for (const v of visuals.slice(0, 80)) {
     const body = { version: '1.0.0', queries: [{ Query: { Commands: [{ SemanticQueryDataShapeCommand: { Query: v.q, Binding: { Primary: { Groupings: [{ Projections: v.q.Select.map((_, i) => i) }] }, DataReduction: { DataVolume: 3, Primary: { Window: { Count: 200 } } }, Version: 1 }, ExecutionMetricsKind: 1 } }] }, QueryId: '', ApplicationContext: { DatasetId: model?.dbName, Sources: [{ ReportId: reportId, VisualId: v.name }] } }], cancelQueries: [], modelId: model?.id };
     try {
       const r = await getJSON(`${host}/public/reports/querydata?synchronous=true`, { method: 'POST', headers, body: JSON.stringify(body) });
       const rows = decodeDsr(r.results?.[0]?.result);
       const names = v.q.Select.map(selName);
-      raw.visuals.push({ page: v.page, type: v.type, title: v.title, fields: names, rows: rows.slice(0, 25) });
+      raw.visuals.push({ page: v.page, type: v.type, title: v.title, fields: names, filtersApplied: v.filtered, rows: rows.slice(0, 25) });
       // Single-value visuals (cards/KPIs) whose field or title names a milestone span.
       if (rows.length === 1) {
         const vals = Object.values(rows[0]);
         names.forEach((nm, i) => {
-          const val = vals[i]; if (typeof val !== 'number') return;
-          const label = `${v.title} ${nm}`; const k = classify(label) || classify(nm) || classify(v.title); if (!k || found[k] != null) return;
+          const val = vals[i], sel = v.q.Select[i]; if (typeof val !== 'number' || !aggOk(sel) || NOT_AVERAGE.test(nm)) return;
+          const label = `${v.title} ${nm}`; const k = classify(nm) || classify(label) || classify(v.title); if (!k) return;
+          // First match wins, except that an explicit average/median replaces a non-average one.
+          const avg = isAverage(sel, label);
+          if (found[k] != null && !(avg && !found[k + 'Avg'])) return;
           const l = label.toLowerCase();
           // ImmiTracker measures are in days unless the label says otherwise; the field name's unit beats the title's
           // ("Avg Days AOR to Oath" under a "last 12 months" title is days).
           const unit = t => /week/.test(t) ? 4.345 : /day/.test(t) ? MONTH_DAYS : /month/.test(t) ? 1 : null;
           const months = val / (unit(nm.toLowerCase()) ?? unit(String(v.title).toLowerCase()) ?? MONTH_DAYS);
-          if (months > 0 && months < 60) { found[k] = r1(months); found[k + 'Field'] = label.trim(); }
+          if (months > 0 && months < 60) { found[k] = r1(months); found[k + 'Field'] = label.trim(); found[k + 'Avg'] = avg; }
         });
       }
-    } catch (e) { raw.visuals.push({ page: v.page, type: v.type, title: v.title, error: e.message }); }
+    } catch (e) {
+      raw.visuals.push({ page: v.page, type: v.type, title: v.title, error: e.message });
+      errors.push(`${v.title || v.name}: ${e.message}`.slice(0, 200));
+      // The query definition names its fields even when the request fails, so we know which milestone went missing.
+      v.q.Select.forEach(sel => { const nm = selName(sel); if (!aggOk(sel) || NOT_AVERAGE.test(nm)) return; const k = classify(nm) || classify(`${v.title} ${nm}`) || classify(v.title); if (k) missedKeys.add(k.replace(/Inv$/, '')); });
+    }
     await sleep(250);
   }
   await writeFile(RAW_IMMI, JSON.stringify(raw, null, 1));
+  for (const k of ['oath', 'total', 'fullTotal']) if (found[k] == null && found[k + 'Inv'] != null) { found[k] = found[k + 'Inv']; found[k + 'Field'] = found[k + 'InvField']; }
   if (found.total == null && found.fullTotal != null && found.aor != null) found.total = r1(found.fullTotal - found.aor);
   const res = { ok: true, url: PBI.url, visuals: visuals.length };
   for (const k of ['aor', 'test', 'decision', 'oath', 'total', 'fullTotal']) if (found[k] != null) { res[k] = found[k]; res[k + 'Field'] = found[k + 'Field']; }
+  const missed = [...missedKeys].filter(k => res[k] == null);
+  if (res.total == null && missed.some(k => k === 'fullTotal' || k === 'aor')) missed.push('total');
+  if (errors.length) res.warnings = errors;
+  if (missed.length) res.missed = missed;
   if (!['aor', 'test', 'decision', 'oath', 'total'].some(k => res[k] != null)) throw new Error(`report read (${visuals.length} visuals) but no wait-time measures recognised; see data/immitracker-raw.json`);
   return res;
 }
@@ -404,7 +469,13 @@ async function main() {
   const jobs = { ircc: fetchIrcc, r26: () => fetchRedditSource('r26', token), r25: () => fetchRedditSource('r25', token), immi: fetchImmi };
   const sources = {};
   for (const [k, fn] of Object.entries(jobs)) {
-    try { sources[k] = { ...(await fn()), fetched: new Date().toISOString() }; log(k, 'ok', JSON.stringify(sources[k]).slice(0, 300)); }
+    try {
+      const res = await fn(), old = prev.sources?.[k] || {};
+      // A milestone whose own query failed keeps its previous value (marked stale) instead of vanishing.
+      for (const m of res.missed || []) if (old[m] != null) { res[m] = old[m]; if (old[m + 'Field']) res[m + 'Field'] = old[m + 'Field']; (res.stale ||= []).push(m); }
+      delete res.missed;
+      sources[k] = { ...res, fetched: new Date().toISOString() }; log(k, 'ok', JSON.stringify(sources[k]).slice(0, 300));
+    }
     catch (e) {
       log(k, 'FAILED:', e.message);
       const old = prev.sources?.[k] || {};
