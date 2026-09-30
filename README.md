@@ -17,14 +17,24 @@ the browser's localStorage (`citizenship-tracker-v1`).
 
 "Total" means AOR → oath, matching IRCC's published figure.
 
-## Your data across devices (cloud sync)
+## Password and your data across devices
 
-Dates, stages, notes and checklists are saved in the browser and, once set up, in a Cloudflare Durable Object behind
-the Worker (`worker/index.js`, API at `/api/state`). Open the site on any device, enter your sync passphrase once, and
-your data loads there; every change is saved to the cloud a moment later, and other devices pick it up when you come
-back to them. The newest edit wins. Without a passphrase configured the app works as before (saved on each device only).
+The whole site sits behind a password page served by the Worker (`worker/index.js`): the app, its data files and the
+API answer only after you log in (a signed, HttpOnly session cookie that lasts 30 days; "Sign out" is in the Process
+footer). The repo holds only a salted PBKDF2 hash of the password (`SITE_PASSWORD_HASH` in `wrangler.jsonc`), never the
+password itself.
 
-The site is public, so the API only answers requests carrying the passphrase. Choose a long, random one.
+To change the password, either set a `SITE_PASSWORD` secret on the Worker (Cloudflare dashboard → Worker → Settings →
+Variables and Secrets, or `npx wrangler secret put SITE_PASSWORD`; it takes precedence over the hash), or generate a new
+hash and replace `SITE_PASSWORD_HASH`:
+
+```sh
+node -e 'const c=require("crypto"),s=c.randomBytes(16),i=100000;console.log(`pbkdf2-sha256$${i}$${s.toString("base64")}$${c.pbkdf2Sync(process.argv[1],s,i,32,"sha256").toString("base64")}`)' 'new password'
+```
+
+Once you're logged in, dates, stages, notes and checklists are saved to a Cloudflare Durable Object as well as the
+browser, so they load on any device you log in from; other devices pick up changes when you come back to them, and the
+newest edit wins. (`SYNC_TOKEN` is optional and only needed for API access without logging in.)
 
 ### Schedule and deploy
 
@@ -39,8 +49,7 @@ One-time setup:
    your Account ID (Workers & Pages overview, right-hand column).
 3. Add them as GitHub repository secrets: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
    (Settings → Secrets and variables → Actions). Without them the deploy step is skipped with a warning.
-   Also add `SYNC_TOKEN` (your sync passphrase); each deploy uploads it to the Worker. You can instead set it in the
-   Cloudflare dashboard (Worker → Settings → Variables and Secrets) or with `npx wrangler secret put SYNC_TOKEN`.
+   (Optional: `SYNC_TOKEN`, uploaded to the Worker on each deploy, for API access without logging in.)
 4. Run the workflow once from the Actions tab. The site appears at
    `https://citizenship-dashboard.<your-subdomain>.workers.dev`; add a custom domain in the Cloudflare dashboard if you like.
 5. Optional but recommended for reliability: create a Reddit "script" app at <https://www.reddit.com/prefs/apps> and add
@@ -57,5 +66,5 @@ npm run dev          # local app
 npm run fetch-data   # refresh public/data/wait-times.json
 npm run build        # static build in dist/
 npm run deploy       # build + wrangler deploy (needs `npx wrangler login` first)
-npx wrangler dev     # after a build: app + sync API locally (put SYNC_TOKEN=... in .dev.vars)
+npx wrangler dev     # after a build: app, password page and sync API locally
 ```

@@ -110,7 +110,7 @@ export default class App extends Component {
   }
   setSync(sync) { this.setState(s => ({ sync: Object.assign({}, s.sync, sync) })); }
   api(method, body, keepalive) {
-    return fetch('./api/state', { method, keepalive, cache: 'no-store', headers: Object.assign({ authorization: 'Bearer ' + readSyncKey() }, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
+    return fetch('./api/state', { method, keepalive, cache: 'no-store', headers: Object.assign(readSyncKey() ? { authorization: 'Bearer ' + readSyncKey() } : {}, body ? { 'content-type': 'application/json' } : {}), body: body ? JSON.stringify(body) : undefined });
   }
   // Take the cloud copy: it replaces this device's data (this tab keeps its current view and drafts).
   adopt(remote) {
@@ -125,7 +125,7 @@ export default class App extends Component {
     try { r = await this.api('GET'); } catch (e) { this.setSync({ status: readSyncKey() ? 'error' : 'off', msg: '' }); return; }
     // No API (plain static hosting or local `vite dev`) or no passphrase configured on the server: local only.
     if (r.status === 503 || !(r.headers.get('content-type') || '').includes('json')) { this.setSync({ status: 'off', msg: '' }); return; }
-    if (r.status === 401) { this.setSync({ status: 'locked', msg: readSyncKey() ? 'That passphrase didn’t work.' : '' }); return; }
+    if (r.status === 401) { if (await this.loginExpired(r)) return; this.setSync({ status: 'locked', msg: readSyncKey() ? 'That passphrase didn’t work.' : '' }); return; }
     if (!r.ok) { this.setSync({ status: 'error', msg: '' }); return; }
     const { state: remote } = await r.json();
     if (remote && remote.savedAt > this.savedAt) this.adopt(remote);
@@ -140,11 +140,13 @@ export default class App extends Component {
     const body = { data: this.persisted(this.state), savedAt: this.savedAt };
     try {
       const r = await this.api('PUT', body, keepalive);
-      if (r.status === 401) { this.setSync({ status: 'locked', msg: 'That passphrase didn’t work.' }); return; }
+      if (r.status === 401) { if (await this.loginExpired(r)) return; this.setSync({ status: 'locked', msg: 'That passphrase didn’t work.' }); return; }
       if (r.status === 409) { this.adopt((await r.json()).state); this.setSync({ status: 'ok', at: Date.now() }); return; }
       this.setSync(r.ok ? { status: 'ok', at: Date.now(), msg: '' } : { status: 'error' });
     } catch (e) { this.setSync({ status: 'error' }); }
   }
+  // The site's login session ran out: reload to get the password page (edits are already saved on this device).
+  async loginExpired(r) { try { if ((await r.clone().json()).error === 'login required') { window.location.reload(); return true; } } catch (e) { /* ignore */ } return false; }
   connect() { const k = this.state.syncDraft.trim(); if (!k) return; writeSyncKey(k); this.setState({ syncDraft: '' }); this.setSync({ status: 'checking', msg: '' }); this.pull(); }
   forget() { writeSyncKey(''); this.setSync({ status: 'locked', msg: '' }); }
   up(fn) { this.setState(fn, () => this.save()); }
@@ -210,7 +212,7 @@ export default class App extends Component {
   }
   syncLine() {
     const s = this.state.sync;
-    if (s.status === 'ok') return <span>Saved to your cloud copy{s.at ? ' (last sync ' + timeText(s.at) + ')' : ''}. <button className="link" style={{ fontSize: 12.5, color: '#8898AA', textDecoration: 'underline' }} onClick={() => this.forget()}>Forget passphrase on this device</button></span>;
+    if (s.status === 'ok') return <span>Saved to your cloud copy{s.at ? ' (last sync ' + timeText(s.at) + ')' : ''}. {readSyncKey() ? <button className="link" style={{ fontSize: 12.5, color: '#8898AA', textDecoration: 'underline' }} onClick={() => this.forget()}>Forget passphrase on this device</button> : <a href="/logout" style={{ color: '#8898AA' }}>Sign out</a>}</span>;
     if (s.status === 'error') return <span>Saved on this device; cloud sync is unreachable and will retry.</span>;
     if (s.status === 'locked') return <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>Saved on this device. Sync across devices: {this.renderSyncForm(true)}</span>;
     if (s.status === 'checking') return <span>Checking cloud sync…</span>;

@@ -18,6 +18,7 @@ only 2 agents at a time on the 4-CPU cloud containers used here.
 - React 19 + Vite 8 app in `src/`; data fetcher `scripts/fetch-data.mjs` writes `public/data/wait-times.json`.
 - `.github/workflows/update-and-deploy.yml` refreshes data every 2 days and deploys to Cloudflare Workers
   (`wrangler.jsonc`). Deploys need the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets.
-- User data syncs across devices through `worker/index.js` (Durable Object `TrackerState`, `/api/state`),
-  guarded by the `SYNC_TOKEN` secret; test locally with `npx wrangler dev` and a `.dev.vars` file.
+- `worker/index.js` gates the whole site behind a password (hash in `wrangler.jsonc` `SITE_PASSWORD_HASH`, or a
+  `SITE_PASSWORD` secret) and syncs user data across devices via the Durable Object `TrackerState` (`/api/state`).
+  Never commit the plaintext password. Test locally with `npm run build && npx wrangler dev`.
 - The owner asked for no automated tests; verify changes with builds, offline script runs and browser checks.

@@ -1,13 +1,20 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  // Static app plus a small API (worker/index.js) that stores your tracker data in a Durable Object.
-  // Unknown paths get a plain 404 (the app has no client-side routes).
+  // Static app behind a password gate, plus a small API (worker/index.js) that stores your tracker data in a
+  // Durable Object. Unknown paths get a plain 404 (the app has no client-side routes).
   "name": "citizenship-dashboard",
   "main": "worker/index.js",
   "compatibility_date": "2026-09-30",
   "assets": {
     "directory": "./dist",
-    "binding": "ASSETS"
+    "binding": "ASSETS",
+    // Every request goes through the Worker first so the password gate covers the app and its data files.
+    "run_worker_first": true
+  },
+  "vars": {
+    // Salted PBKDF2 hash of the site password (not the password itself). To change the password, set a
+    // SITE_PASSWORD secret (it takes precedence) or replace this with a new hash (see README).
+    "SITE_PASSWORD_HASH": "pbkdf2-sha256$100000$0rPLvrkHTGe5tyr0wur/JQ==$N36W2ksgt/0nkI9C1wa/5RXUGYmpSgGqsJvnv7jUzu0="
   },
   "durable_objects": {
     "bindings": [{ "name": "TRACKER", "class_name": "TrackerState" }]
