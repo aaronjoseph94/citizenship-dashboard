@@ -17,16 +17,26 @@ the browser's localStorage (`citizenship-tracker-v1`).
 
 "Total" means AOR → oath, matching IRCC's published figure.
 
-### Schedule
+### Schedule and deploy
 
-`.github/workflows/update-and-deploy.yml` runs every 2 days (and on manual dispatch): fetch → commit the JSON → build →
-deploy to GitHub Pages. Pushes to `main` just rebuild and deploy.
+The site is hosted on **Cloudflare Workers** (static assets only, see `wrangler.jsonc`).
+`.github/workflows/update-and-deploy.yml` runs every 2 days (and on manual dispatch): fetch → commit the JSON →
+build → `wrangler deploy`. Pushes to `main` just rebuild and deploy.
 
 One-time setup:
-1. **Settings → Pages → Source: GitHub Actions.**
-2. Optional but recommended for reliability: create a Reddit "script" app at <https://www.reddit.com/prefs/apps> and add
+1. Make `main` the repository's default branch (Settings → General → Default branch). GitHub only runs scheduled
+   workflows on the default branch.
+2. In Cloudflare, create an API token with the **Edit Cloudflare Workers** template (My Profile → API Tokens), and copy
+   your Account ID (Workers & Pages overview, right-hand column).
+3. Add them as GitHub repository secrets: `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
+   (Settings → Secrets and variables → Actions). Without them the deploy step is skipped with a warning.
+4. Run the workflow once from the Actions tab. The site appears at
+   `https://citizenship-dashboard.<your-subdomain>.workers.dev`; add a custom domain in the Cloudflare dashboard if you like.
+5. Optional but recommended for reliability: create a Reddit "script" app at <https://www.reddit.com/prefs/apps> and add
    `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` as repository secrets. Reddit blocks most unauthenticated requests from
    cloud IPs; the archive fallbacks cover that but can lag by a few days.
+
+Manual deploy from your machine: `npx wrangler login`, then `npm run deploy`.
 
 ## Develop
 
@@ -35,4 +45,5 @@ npm install
 npm run dev          # local app
 npm run fetch-data   # refresh public/data/wait-times.json
 npm run build        # static build in dist/
+npm run deploy       # build + wrangler deploy (needs `npx wrangler login` first)
 ```
