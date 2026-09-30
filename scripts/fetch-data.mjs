@@ -138,8 +138,8 @@ const NUM_RE = /\b(\d{1,2})[/.-](\d{1,2})[/.-](20\d\d|\d\d)\b/g;
 // order: 'MD' | 'DM' for dd/mm vs mm/dd numeric dates, 'auto' to decide per date.
 const DATE_RES = [
   // 10-Nov-2024, 03/Jan/25, Nov-10-2024: only these tight forms take a 2-digit year, so clock times like 'Jun 10, 10:30' stay safe.
-  [new RegExp(`\\b(\\d{1,2})[-/]${MON}[-/](20\\d\\d|\\d\\d)\\b`, 'gi'), m => ({ y: +m[3] < 100 ? 2000 + +m[3] : +m[3], mo: MONTHS[m[2].slice(0, 3).toLowerCase()], d: +m[1] })],
-  [new RegExp(`\\b${MON}[-/](\\d{1,2})[-/](20\\d\\d|\\d\\d)\\b`, 'gi'), m => ({ y: +m[3] < 100 ? 2000 + +m[3] : +m[3], mo: MONTHS[m[1].slice(0, 3).toLowerCase()], d: +m[2] })],
+  [new RegExp(`\\b(\\d{1,2})[-/]${MON}[-/](20\\d\\d|\\d\\d)\\b(?![:.]\\d)`, 'gi'), m => ({ y: +m[3] < 100 ? 2000 + +m[3] : +m[3], mo: MONTHS[m[2].slice(0, 3).toLowerCase()], d: +m[1] })],
+  [new RegExp(`\\b${MON}[-/](\\d{1,2})[-/](20\\d\\d|\\d\\d)\\b(?![:.]\\d)`, 'gi'), m => ({ y: +m[3] < 100 ? 2000 + +m[3] : +m[3], mo: MONTHS[m[1].slice(0, 3).toLowerCase()], d: +m[2] })],
   [new RegExp(`\\b(20\\d\\d)[-/.](\\d{1,2})[-/.](\\d{1,2})\\b`, 'g'), m => ({ y: +m[1], mo: +m[2] - 1, d: +m[3] })],
   [NUM_RE, (m, order) => { const a = +m[1], b = +m[2]; const y = +m[3] < 100 ? 2000 + +m[3] : +m[3]; const dm = order === 'DM' || (order === 'auto' && a > 12); return dm ? { y, mo: b - 1, d: a } : { y, mo: a - 1, d: b }; }],
   [new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?${MON},?\\s*(20\\d\\d)?\\b`, 'gi'), m => ({ y: m[3] ? +m[3] : null, mo: MONTHS[m[2].slice(0, 3).toLowerCase()], d: +m[1] })],
@@ -197,11 +197,13 @@ function extractDates(body, order) {
 }
 
 // Label from the keyword nearest the date: 'before' = last keyword ending before it, 'after' = first keyword following it.
+// "no OI yet", "still waiting for oath": a negated keyword names a milestone that hasn't happened.
+const NEGATED = /\b(no|not|without|never|waiting\s+(on|for))\s+(an?\s+|the\s+|my\s+|any\s+)?$/i;
 function keyIn(win, side) {
   let best = null;
   KEYS.forEach(([k, re], rank) => {
     re.lastIndex = 0; let m, pos = -1;
-    while ((m = re.exec(win))) { pos = side === 'before' ? m.index + m[0].length : m.index; if (side === 'after') break; }
+    while ((m = re.exec(win))) { if (NEGATED.test(win.slice(Math.max(0, m.index - 30), m.index))) continue; pos = side === 'before' ? m.index + m[0].length : m.index; if (side === 'after') break; }
     if (pos < 0) return;
     if (!best || (side === 'before' ? pos > best.pos : pos < best.pos)) best = { k, pos, rank };
   });
@@ -209,10 +211,17 @@ function keyIn(win, side) {
 }
 
 function timelineFor(text, createdUtc, threadYear, order) {
-  const dates = extractDates(text, order);
+  // "as of Jul 1" / "since Mar 3" / "until ..." are status dates, not milestones.
+  const dates = extractDates(text, order).filter(dt => !/\b(as\s+of|since|until|till)\s*$/i.test(text.slice(Math.max(0, dt.s - 12), dt.s)));
   if (dates.length < 2) return null;
   const created = new Date(createdUtc * 1000);
-  const before = dates.map((dt, i) => keyIn(text.slice(Math.max(i ? dates[i - 1].e : 0, dt.s - 60), dt.s), 'before'));
+  // A date on a line with its own words ('Last updated: Jul 10') takes its label from that line only, so a blank
+  // placeholder line above it ('OD: -', 'Oath: TBD') can't lend it a milestone.
+  const before = dates.map((dt, i) => {
+    const from = Math.max(i ? dates[i - 1].e : 0, dt.s - 60), ls = text.lastIndexOf('\n', dt.s - 1) + 1;
+    const own = text.slice(Math.max(from, ls), dt.s);
+    return keyIn(ls > from && /[a-z]{2}/i.test(own) ? own : text.slice(from, dt.s), 'before');
+  });
   const after = dates.map((dt, i) => {
     const nl = text.indexOf('\n', dt.e);
     // Stop at the item separator too: in "AOR: Mar 3, Test: May 20" the keyword after ", " belongs to the next date.
@@ -227,27 +236,45 @@ function timelineFor(text, createdUtc, threadYear, order) {
   const labels = after.filter(Boolean).length > sameLineBefore ? after : before;
   // "Oath invite: May 20 for Jun 10": the date after "for" is the ceremony (or test) itself.
   const EVENT = { testInvite: 'test', oathInvite: 'oath' };
-  for (let i = 1; i < dates.length; i++) if (!labels[i] && EVENT[labels[i - 1]] && /^\s*\(?\s*for\s+(?:(?:the|a|an)\s+)?$/i.test(text.slice(dates[i - 1].e, dates[i].s))) labels[i] = EVENT[labels[i - 1]];
+  for (let i = 1; i < dates.length; i++) if (!labels[i] && EVENT[labels[i - 1]] && /^\s*\)?\s*[,\-–]?\s*\(?\s*for\s+(?:(?:the|a|an)\s+)?$/i.test(text.slice(dates[i - 1].e, dates[i].s))) labels[i] = EVENT[labels[i - 1]];
   const ev = {};
-  let prevDate = null, prevK = null;
-  dates.forEach((dt, i) => {
-    const k = labels[i];
-    if (!k) return;
-    // "AOR Feb 26 (applied Jan 8)" / "Oath done Jun 10! Applied Jan 8 ...": an earlier milestone written after a later one
-    // is a back-reference, not a date in the next year.
-    const back = prevK != null && ORDER.indexOf(k) < ORDER.indexOf(prevK);
-    let y = dt.y;
-    if (y == null) {
-      y = prevDate ? prevDate.getFullYear() : Math.min(threadYear, created.getFullYear());
-      const cand = new Date(y, dt.mo, dt.d);
-      if (prevDate && !back && cand < prevDate - 20 * DAY) y++;
-      else if (!prevDate && cand > created.getTime() + 31 * DAY) y--;
+  // Pass 1: which labelled dates are back-references (an earlier milestone written after a later one).
+  const items = []; let prevK = null;
+  dates.forEach((dt, i) => { const k = labels[i]; if (!k) return; const back = prevK != null && ORDER.indexOf(k) < ORDER.indexOf(prevK); items.push({ dt, k, back }); if (!back) prevK = k; });
+  let prevDate = null;
+  const keep = (k, date) => { if (date > created.getTime() + 400 * DAY || date.getFullYear() < 2019) return false; if (!ev[k]) ev[k] = date; return true; };
+  for (let j = 0; j < items.length; j++) {
+    const { dt, k, back } = items[j];
+    if (!back || !prevDate) {
+      let y = dt.y;
+      if (y == null) {
+        y = prevDate ? prevDate.getFullYear() : Math.min(threadYear, created.getFullYear());
+        const cand = new Date(y, dt.mo, dt.d);
+        if (prevDate && cand < prevDate - 20 * DAY) y++;
+        else if (!prevDate && cand > created.getTime() + 31 * DAY) y--;
+      }
+      const date = new Date(y, dt.mo, dt.d);
+      if (keep(k, date)) prevDate = date;
+      continue;
     }
-    const date = new Date(y, dt.mo, dt.d);
-    if (date > created.getTime() + 400 * DAY || y < 2019) return; // future-dated scheduled events are OK (ceremony dates), junk isn't
-    if (!ev[k]) ev[k] = date;
-    if (!back) { prevDate = date; prevK = k; }
-  });
+    // A run of back-references is its own forward chain that ends before the anchor.
+    let r = j; while (r + 1 < items.length && items[r + 1].back) r++;
+    const run = []; let chain = null, chainK = null, explicit = false;
+    for (let q = j; q <= r; q++) {
+      const d = items[q].dt; let y = d.y; const kk = items[q].k;
+      if (y != null) explicit = true;
+      else {
+        y = chain ? chain.getFullYear() : prevDate.getFullYear();
+        const rev = chain && ORDER.indexOf(kk) < ORDER.indexOf(chainK);
+        if (chain && !rev && new Date(y, d.mo, d.d) < chain - 20 * DAY) y++;
+        if (chain && rev && new Date(y, d.mo, d.d) > chain.getTime() + 20 * DAY) y--;
+      }
+      chain = new Date(y, d.mo, d.d); chainK = kk; run.push({ k: kk, y, d, fixed: d.y != null });
+    }
+    if (!explicit) { let guard = 0; while (guard++ < 3 && Math.max(...run.map(x => +new Date(x.y, x.d.mo, x.d.d))) > prevDate.getTime() + 20 * DAY) run.forEach(x => x.y--); }
+    for (const x of run) keep(x.k, new Date(x.y, x.d.mo, x.d.d));
+    j = r;
+  }
   const present = ORDER.filter(k => ev[k]);
   const ordered = present.every((k, i) => !i || ev[k] >= ev[present[i - 1]]);
   const months = (a, b) => (a && b && b >= a) ? (b - a) / DAY / MONTH_DAYS : null;
@@ -270,7 +297,7 @@ function timelineFor(text, createdUtc, threadYear, order) {
 
 function parseTimeline(body, createdUtc, threadYear) {
   // Lines quoted from the parent comment ('> ...') are someone else's timeline.
-  const text = body.replace(/^[ \t]*(?:>|&gt;).*$/gm, '').replace(/\*|_|~|`|#/g, ' ');
+  const text = body.replace(/^[ \t]*(?:>|&gt;)[^\n]*(?:\n(?![ \t]*\n)[^\n]*)*/gm, '').replace(/\*|_|~|`|#/g, ' ');
   const order = numericOrder(text);
   let res;
   if (order !== 'ambiguous') res = timelineFor(text, createdUtc, threadYear, order);
@@ -340,31 +367,40 @@ function decodeDsr(result) {
 function selName(sel) { return sel.NativeReferenceName || sel.Name || JSON.stringify(sel).slice(0, 80); }
 
 // Count/min/max/sum cards ('Count of AOR to Oath', 'Max of ...') are not typical waits.
-const NOT_AVERAGE = /^\s*(#|(count|countnonnull|number|num|sum|min|max|minimum|maximum)\b)|\b(fastest|slowest|shortest|longest)\b/i;
+// '# Days ...' / 'Number of Days ...' are durations; '# Applicants', 'Number of cases' are counts.
+const NOT_AVERAGE = /^\s*((#|(number|num)\b)(?!\s*(of\s+)?(days?|weeks?|months?)\b)|(count|countnonnull|sum|min|max|minimum|maximum)\b)|\b(fastest|slowest|shortest|longest)\b/i;
 // Power BI aggregation functions: 0 Sum, 1 Avg, 2 Count, 3 Min, 4 Max, 5 CountNonNull, 6 Median.
 const aggOk = sel => sel.Aggregation == null || [1, 6].includes(sel.Aggregation.Function);
 const isAverage = (sel, name) => (sel.Aggregation && [1, 6].includes(sel.Aggregation.Function)) || /\b(avg|average|mean|median)\b/i.test(name);
 
-function classify(name) {
+// Specific milestone spans named in a card's field or title.
+function classifySpan(name) {
   const n = name.toLowerCase().replace(/[_.]/g, ' ');
   const to = '\\W*(to|-|→|>|until)\\W*';
   if (new RegExp(`(submi|appl|\\bad\\b|\\bapp\\b)\\w*${to}aor`).test(n)) return 'aor';
   if (new RegExp(`aor${to}(test|invite|exam)`).test(n)) return 'test';
   if (new RegExp(`(test|exam)\\w*${to}(decision|dm|approv)`).test(n)) return 'decision';
-  // An oath invite/letter is not the ceremony, so it never ends a total or oath span.
-  const oath = '(oath|ceremony|citizen)(?!\\W*(invit|inv\\b|letter|email|notice))';
+  // An oath invite/letter (incl. "Oath Ceremony Invite") is not the ceremony, so it never ends a total or oath span.
+  const notInvite = '(?!\\w*\\W*(ceremony\\W*)?(invit|inv\\b|letter|email|notice))';
+  const oath = `(oath|ceremony|citizen)${notInvite}`;
   if (new RegExp(`(decision|dm|approv)\\w*${to}${oath}`).test(n)) return 'oath';
   if (new RegExp(`aor${to}${oath}`).test(n)) return 'total';
   if (new RegExp(`(submi|appl|\\bapp\\b)\\w*${to}${oath}`).test(n)) return 'fullTotal';
   // Spans ending at the oath invite/letter: used only when no ceremony figure exists.
-  const inv = '(oath|ceremony)\\W*(invit|inv\\b|letter|email|notice)';
+  const inv = '(oath|ceremony|citizen\\w*)\\W*(ceremony\\W*)?(invit|inv\\b|letter|email|notice)';
   if (new RegExp(`(decision|dm|approv)\\w*${to}${inv}`).test(n)) return 'oathInv';
   if (new RegExp(`aor${to}${inv}`).test(n)) return 'totalInv';
   if (new RegExp(`(submi|appl|\\bapp\\b)\\w*${to}${inv}`).test(n)) return 'fullTotalInv';
-  // "Total" alone is often a count card ("Total Applications"); only accept it with a duration word and no count word.
-  if (/\b(overall|total|end to end)\b/.test(n) && /(day|week|month|time|wait|processing|duration)/.test(n) && !/(count|number|#|applications?\b|applicants?|cases?|records?|rows)/.test(n)) return 'fullTotal';
   return null;
 }
+// "Total"/"Overall" with a duration word and no count word ("Total Applications" is a count card).
+function classifyGeneric(name) {
+  const n = name.toLowerCase().replace(/[_.]/g, ' ');
+  return /\b(overall|total|end to end)\b/.test(n) && /(day|week|month|time|wait|processing|duration)/.test(n) && !/(count|number|#|applications?\b|applicants?|cases?|records?|rows)/.test(n) ? 'fullTotal' : null;
+}
+const classify = name => classifySpan(name) || classifyGeneric(name);
+// A span named anywhere on the card beats a generic "Total days" field under a stage title.
+const classifyCard = (nm, title) => classifySpan(nm) || classifySpan(`${title} ${nm}`) || classifySpan(title) || classifyGeneric(`${title} ${nm}`);
 
 // Power BI stores filters outside prototypeQuery; the web client adds their Where clauses before querying, so we do too.
 const parseJSON = (s, d) => { try { return typeof s === 'string' ? JSON.parse(s) : (s ?? d); } catch { return d; } };
@@ -399,11 +435,11 @@ async function fetchImmi() {
   for (const sec of mae.exploration?.sections || []) {
     const cfgs = (sec.visualContainers || []).map(vc => ({ vc, cfg: parseJSON(vc.config, null) })).filter(x => x.cfg);
     // Slicer selections saved on the page narrow every visual on it.
-    const slicers = cfgs.filter(x => x.cfg.singleVisual?.visualType === 'slicer').map(x => x.cfg.singleVisual?.objects?.general?.[0]?.properties?.filter?.filter).filter(f => f && Array.isArray(f.Where) && f.Where.length);
+    const slicers = cfgs.filter(x => /slicer/i.test(x.cfg.singleVisual?.visualType || '')).map(x => x.cfg.singleVisual?.objects?.general?.[0]?.properties?.filter?.filter).filter(f => f && Array.isArray(f.Where) && f.Where.length);
     const pageFilters = reportFilters.concat(filterDefs(parseJSON(sec.filters, [])), slicers);
     for (const { vc, cfg } of cfgs) {
       const q = cfg.singleVisual?.prototypeQuery;
-      if (!q?.Select?.length || cfg.singleVisual.visualType === 'slicer') continue;
+      if (!q?.Select?.length || /slicer/i.test(cfg.singleVisual.visualType || '')) continue;
       const title = cfg.singleVisual?.vcObjects?.title?.[0]?.properties?.text?.expr?.Literal?.Value || '';
       // The saved vc.query already has the report's filters and slicer state applied; otherwise add them ourselves.
       const saved = parseJSON(vc.query, null)?.Commands?.[0]?.SemanticQueryDataShapeCommand?.Query;
@@ -426,7 +462,7 @@ async function fetchImmi() {
         const vals = Object.values(rows[0]);
         names.forEach((nm, i) => {
           const val = vals[i], sel = v.q.Select[i]; if (typeof val !== 'number' || !aggOk(sel) || NOT_AVERAGE.test(nm)) return;
-          const label = `${v.title} ${nm}`; const k = classify(nm) || classify(label) || classify(v.title); if (!k) return;
+          const label = `${v.title} ${nm}`; const k = classifyCard(nm, v.title); if (!k) return;
           // First match wins, except that an explicit average/median replaces a non-average one.
           const avg = isAverage(sel, label);
           if (found[k] != null && !(avg && !found[k + 'Avg'])) return;
@@ -442,19 +478,23 @@ async function fetchImmi() {
       raw.visuals.push({ page: v.page, type: v.type, title: v.title, error: e.message });
       errors.push(`${v.title || v.name}: ${e.message}`.slice(0, 200));
       // The query definition names its fields even when the request fails, so we know which milestone went missing.
-      v.q.Select.forEach(sel => { const nm = selName(sel); if (!aggOk(sel) || NOT_AVERAGE.test(nm)) return; const k = classify(nm) || classify(`${v.title} ${nm}`) || classify(v.title); if (k) missedKeys.add(k.replace(/Inv$/, '')); });
+      v.q.Select.forEach(sel => { const nm = selName(sel); if (!aggOk(sel) || NOT_AVERAGE.test(nm)) return; const k = classifyCard(nm, v.title); if (k) missedKeys.add(k.replace(/Inv$/, '')); });
     }
     await sleep(250);
   }
   await writeFile(RAW_IMMI, JSON.stringify(raw, null, 1));
-  for (const k of ['oath', 'total', 'fullTotal']) if (found[k] == null && found[k + 'Inv'] != null) { found[k] = found[k + 'Inv']; found[k + 'Field'] = found[k + 'InvField']; }
-  if (found.total == null && found.fullTotal != null && found.aor != null) found.total = r1(found.fullTotal - found.aor);
+  const deriveTotal = () => { if (found.total == null && found.fullTotal != null && found.aor != null) { found.total = r1(found.fullTotal - found.aor); found.totalField = `${found.fullTotalField} minus ${found.aorField}`; } };
+  deriveTotal();
+  // Invite-based spans only fill gaps no ceremony figure covers, and never a key whose own query failed (that keeps its
+  // previous value via main()).
+  for (const k of ['oath', 'total', 'fullTotal']) if (found[k] == null && !missedKeys.has(k) && found[k + 'Inv'] != null) { found[k] = found[k + 'Inv']; found[k + 'Field'] = found[k + 'InvField']; }
+  deriveTotal();
   const res = { ok: true, url: PBI.url, visuals: visuals.length };
   for (const k of ['aor', 'test', 'decision', 'oath', 'total', 'fullTotal']) if (found[k] != null) { res[k] = found[k]; res[k + 'Field'] = found[k + 'Field']; }
   const missed = [...missedKeys].filter(k => res[k] == null);
   if (res.total == null && missed.some(k => k === 'fullTotal' || k === 'aor')) missed.push('total');
   if (errors.length) res.warnings = errors;
-  if (missed.length) res.missed = missed;
+  if (missed.length) res.missed = [...new Set(missed)];
   if (!['aor', 'test', 'decision', 'oath', 'total'].some(k => res[k] != null)) throw new Error(`report read (${visuals.length} visuals) but no wait-time measures recognised; see data/immitracker-raw.json`);
   return res;
 }

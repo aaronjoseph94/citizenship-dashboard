@@ -263,7 +263,7 @@ export default class App extends Component {
           <ul style={{ listStyle: 'none', margin: '14px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 10 }}>
             {d.upcoming.map((u, i) => <li key={i} style={{ display: 'grid', gridTemplateColumns: '96px minmax(0,1fr)', gap: 10, alignItems: 'baseline', fontSize: 14, lineHeight: 1.4 }}>
               <span className="serif" style={{ fontSize: 18, color: u.est ? '#8898AA' : '#1877F2' }}>{u.est ? fmtM(u.d) : fmt(u.d, u.d.getFullYear() === d.today.getFullYear() ? { month: 'short', day: 'numeric' } : undefined)}</span>
-              <span style={{ color: u.est ? '#425466' : '#0A2540' }}>{u.label}</span></li>)}
+              <span className="wrap" style={{ color: u.est ? '#425466' : '#0A2540' }}>{u.label}</span></li>)}
           </ul>
           {!d.upcoming.length && <p style={{ margin: '14px 0 0', fontSize: 14, color: '#425466', lineHeight: 1.5 }}>No dates ahead yet. Add wait-time data or an event in Process.</p>}
         </div>
@@ -361,7 +361,7 @@ export default class App extends Component {
             </table>
           </div>
           <p style={{ margin: '10px 0 0', fontSize: 12.5, color: '#425466', lineHeight: 1.5 }}>IRCC publishes {r1(this.liveVal('ircc', 'total'))} months for a citizenship grant, counted from AOR. Blue numbers are pulled automatically every 2 days; type in a cell to override it, clear it to go back. The total (AOR → oath) is used if set, otherwise AOR → Test, Test → Decision and Decision → Oath are summed.</p>
-          {s.live && <p className="src-note">{s.live.updated ? 'Last fetch ' + fmt(new Date(s.live.updated)) : 'Not fetched yet'}. {SOURCES.map(src => { const l = liveSrc(src.id); return l ? <span key={src.id}><a href={l.url} target="_blank" rel="noreferrer">{src.label}</a>{l.ok ? '' : ' (unavailable: ' + (l.error || 'no data') + ')'}{'. '}</span> : null; })}</p>}
+          {s.live && <p className="src-note">{s.live.updated ? 'Last fetch ' + fmt(new Date(s.live.updated)) : 'Not fetched yet'}. {SOURCES.map(src => { const l = liveSrc(src.id); return l ? <span key={src.id}><a href={l.url} target="_blank" rel="noreferrer">{src.label}</a>{l.ok ? (l.stale && l.stale.length ? ' (some figures kept from an earlier run)' : '') : ' (unavailable: ' + (l.error || 'no data') + ')'}{'. '}</span> : null; })}</p>}
         </div>
         <div className="card">
           <h2 className="h2">Key dates</h2>
