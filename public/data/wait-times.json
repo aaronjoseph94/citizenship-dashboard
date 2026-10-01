@@ -1,5 +1,5 @@
 {
-  "updated": "2026-09-30T22:47:46.392Z",
+  "updated": "2026-10-01T14:40:27.568Z",
   "sources": {
     "ircc": {
       "ok": true,
@@ -8,30 +8,30 @@
       "url": "https://www.canada.ca/en/immigration-refugees-citizenship/services/application/check-processing-times.html",
       "lastUpdated": "September 3, 2026",
       "waiting": "About 327,100 people waiting",
-      "fetched": "2026-09-30T22:33:04.869Z"
+      "fetched": "2026-10-01T14:33:28.570Z"
     },
     "r26": {
       "ok": true,
       "url": "https://www.reddit.com/r/ImmigrationCanada/comments/1q6vm0e/megathread_processing_times_citizenship_2026/",
-      "via": "arctic-shift:2000",
-      "comments": 1962,
-      "n": 273,
+      "via": "arctic-shift:600",
+      "comments": 597,
+      "n": 77,
       "counts": {
-        "aor": 240,
-        "test": 191,
-        "decision": 1,
-        "oath": 1,
-        "total": 59,
-        "fullTotal": 61
+        "aor": 66,
+        "test": 47,
+        "decision": 0,
+        "oath": 0,
+        "total": 17,
+        "fullTotal": 20
       },
-      "aor": 2,
-      "test": 2.7,
-      "total": 4.6,
-      "fullTotal": 6.2,
+      "aor": 1.8,
+      "test": 2.9,
+      "total": 5,
+      "fullTotal": 6.4,
       "warnings": [
         "reddit: HTTP 403 for https://api.reddit.com/comments/1q6vm0e.json?limit=500&depth=12&raw_json=1&sort=new"
       ],
-      "fetched": "2026-09-30T22:37:15.316Z"
+      "fetched": "2026-10-01T14:37:46.646Z"
     },
     "r25": {
       "ok": true,
@@ -56,7 +56,7 @@
         "arctic-shift: HTTP 422 for https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_1hq3gg4&limit=auto&sort=asc"
       ],
       "fetched": "2026-09-30T21:55:39.740Z",
-      "error": "reddit: HTTP 403 for https://api.reddit.com/comments/1hq3gg4.json?limit=500&depth=12&raw_json=1&sort=new; arctic-shift: HTTP 422 for https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_1hq3gg4&limit=10&sort=asc; pullpush: HTTP 429 for https://api.pullpush.io/reddit/search/comment/?",
+      "error": "reddit: HTTP 403 for https://api.reddit.com/comments/1hq3gg4.json?limit=500&depth=12&raw_json=1&sort=new; arctic-shift: HTTP 422 for https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_1hq3gg4&limit=10&sort=asc; pullpush: HTTP 403 for https://api.pullpush.io/reddit/search/comment/?",
       "stale": [
         "refresh"
       ]
@@ -73,7 +73,7 @@
       "totalField": "median AOR to oath",
       "fullTotal": 6.2,
       "fullTotalField": "median Submission to oath",
-      "fetched": "2026-09-30T22:40:31.044Z"
+      "fetched": "2026-10-01T14:40:27.568Z"
     }
   }
 }
