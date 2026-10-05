@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-03T12:46:45.822Z",
+  "updated": "2026-10-05T16:13:18.935Z",
   "sources": {
     "ircc": {
       "ok": true,
@@ -8,7 +8,7 @@
       "url": "https://www.canada.ca/en/immigration-refugees-citizenship/services/application/check-processing-times.html",
       "lastUpdated": "September 3, 2026",
       "waiting": "About 327,100 people waiting",
-      "fetched": "2026-10-03T12:36:51.343Z"
+      "fetched": "2026-10-05T16:08:38.607Z"
     },
     "r26": {
       "ok": true,
@@ -31,7 +31,11 @@
       "warnings": [
         "reddit: HTTP 403 for https://api.reddit.com/comments/1q6vm0e.json?limit=500&depth=12&raw_json=1&sort=new"
       ],
-      "fetched": "2026-10-03T12:44:11.655Z"
+      "fetched": "2026-10-03T12:44:11.655Z",
+      "error": "reddit: HTTP 403 for https://api.reddit.com/comments/1q6vm0e.json?limit=500&depth=12&raw_json=1&sort=new; arctic-shift: HTTP 422 for https://arctic-shift.photon-reddit.com/api/comments/search?link_id=t3_1q6vm0e&limit=10&sort=asc; pullpush: HTTP 403 for https://api.pullpush.io/reddit/search/comment/?",
+      "stale": [
+        "refresh"
+      ]
     },
     "r25": {
       "ok": true,
@@ -73,7 +77,7 @@
       "totalField": "median AOR to oath",
       "fullTotal": 6.2,
       "fullTotalField": "median Submission to oath",
-      "fetched": "2026-10-03T12:46:45.822Z"
+      "fetched": "2026-10-05T16:13:18.935Z"
     }
   }
 }
